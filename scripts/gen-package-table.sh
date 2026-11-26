@@ -72,12 +72,16 @@ rows = []
 for pkg, ver, desc in sorted(stanzas):
     dpath = dir_of(pkg)
     recipe = f'`{dpath}/`' if dpath else '--'
-    # PACKAGES.md lives IN docs/ -- its links must be relative to docs/,
-    # not to the repo root (the user caught the doubled prefix)
+    # PACKAGES.md used to live only under docs/ and link relatively; since
+    # 2026-11-26 docs/*.md are PRIVATE (gitignored -- intranet IPs), so the
+    # docs column links the gh-pages MIRRORS (site-absolute, resolvable
+    # both on the repo and the Pages site).  layout-gate still enforces
+    # docs/<name>.md existence locally, where the private files live.
     docs_cell = '--'
     for c in cands_of(pkg) + [(dpath or '').split('/')[-1]]:
         if c and os.path.exists(os.path.join(repo, 'docs', f'{c}.md')):
-            docs_cell = f'[{c}.md]({c}.md)'; break
+            docs_cell = (f'[{c}.md](https://venus-homelab.github.io/'
+                         f'ios-armv7-builder/docs/{c}.md)'); break
     # test column: candidate ladder over the same names (audit 2026-11-24
     # item 5 + 2026-11-25: one guess missed lz4 and every X4 package whose
     # tests file uses the stripped base)
@@ -85,7 +89,10 @@ for pkg, ver, desc in sorted(stanzas):
     for c in cands_of(pkg) + [(dpath or '').split('/')[-1]]:
         if c and os.path.exists(os.path.join(repo, 'tests', f'{c}.sh')):
             n = len(re.findall(r'expect_', open(os.path.join(repo, 'tests', f'{c}.sh')).read()))
-            acc = f'[../tests/{c}.sh](../tests/{c}.sh), {n} cases'
+            # tests/*.sh ARE tracked -- link the canonical blob on main so
+            # the table resolves identically on the repo and the Pages site
+            acc = (f'[tests/{c}.sh](https://github.com/venus-homelab/'
+                   f'ios-armv7-builder/blob/main/tests/{c}.sh), {n} cases')
             break
     d = (desc or '').split('.')[0].strip()[:64]
     rows.append(f'| {pkg} | {ver} | {recipe} | {docs_cell} | {acc} |')

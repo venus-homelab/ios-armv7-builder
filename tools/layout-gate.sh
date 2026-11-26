@@ -102,7 +102,12 @@ def cell_target(cell, kind):
         return cell.strip('`').rstrip('/')
     if kind == 'tests':
         m = re.search(r'\]\(([^)]+)\)', cell)
-        return m.group(1).lstrip('./') if m else cell
+        href = m.group(1) if m else cell
+        if href.startswith('http'):
+            # site-absolute (2026-11-27): .../blob/main/tests/<name>.sh
+            mm = re.search(r'/blob/[^/]+/(tests/.+)$', href)
+            return mm.group(1) if mm else None
+        return href.lstrip('./')
     if kind == 'docs':
         m = re.match(r'\[([^]]+)\]', cell)
         return f'docs/{m.group(1)}' if m else None
@@ -116,7 +121,10 @@ for pkg, recipe, docs, tests in rows:
     if t and not os.path.isfile(t):
         bad.append(f'{pkg}: tests 列指向不存在的 {t}')
     t = cell_target(docs, 'docs')
-    if t and not os.path.isfile(t):
+    if t and not os.path.isfile(t) and os.path.isdir('docs'):
+        # docs/*.md are private (gitignored): the CI checkout has no docs/
+        # and must not fail on the existence half of this check -- the
+        # local pre-commit run enforces it where the files actually live.
         bad.append(f'{pkg}: docs 列指向不存在的 {t}')
 # reverse: an existing artifact must not be '--'
 # deb-producing recipes per the authoritative map (net/libpcap has a
