@@ -27,7 +27,6 @@
 |---|---|
 | ★ `docs/python.md` | **Python 索引页**：3.13/3.14 双版本导航、重建、两个必知坑 |
 | `docs/python3.md` | CPython 移植主文档（13 道墙、原子根因、全部验收） |
-| `docs/node.md` | Node 22.23.4（墙列表、链接配方、JIT 判死证据链） |
 | ★ `docs/go.md` | **Go 1.27.2 darwin/arm32 移植**（14 个坑 → 根因 → 调试方法；真机验证通过） |
 | `docs/quickjs.md` | QuickJS（Phase 1） |
 | `docs/lua.md` | Lua 5.4.7 + luac + liblua.a（全仓最易移植；2026-11-22 上线） |
