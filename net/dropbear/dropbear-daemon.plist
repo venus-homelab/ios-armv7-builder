@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple Computer//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.hesper.dropbear</string>
+
+	<!-- Runs as root so that the server can drop to the connecting user's
+	     privileges after authentication, the same as /usr/sbin/sshd does.
+	     The bootstrap locates the wrapper next to the users' own scripts. -->
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/sh</string>
+		<string>/var/mobile/.local/bin/dropbear-daemon.sh</string>
+	</array>
+
+	<!-- One port.  This daemon used to carry a second -p on 2222 as a
+	     verified lifeline, and deliberately no longer does: a third SSH
+	     daemon (com.hesper.osshd, the cross-built OpenSSH 10.6p2) now
+	     listens on 22226, so the lifeline's job is done and one listener per
+	     job is easier to reason about.  If a fallback is ever wanted again,
+	     set DROPBEAR_EXTRA_ARGS to "-p 2222": the wrapper passes it straight
+	     through to the binary, which listens on every -p it is given. -->
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>DROPBEAR_PORT</key>
+		<string>__DROPBEAR_PORT__</string>
+		<key>DROPBEAR_EXTRA_ARGS</key>
+		<string>__DROPBEAR_EXTRA_ARGS__</string>
+	</dict>
+
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+
+	<key>StandardErrorPath</key>
+	<string>/var/mobile/.local/dropbear-daemon.err</string>
+	<key>StandardOutPath</key>
+	<string>/var/mobile/.local/dropbear-daemon.log</string>
+</dict>
+</plist>

@@ -1,0 +1,73 @@
+# tools/recipe-pkgs.txt -- the authoritative recipe -> package mapping.
+#
+# Why this file exists (2026-11-25 audit): pool-freshness associated pool
+# debs with recipes through a heuristic parse and left 16 packages
+# "unassociated" forever (libpcap/openssl/nocablewarn have no own
+# make-deb.sh; others emit their deb from a sibling recipe).  This table is
+# the explicit contract: the left column is the recipe directory, the right
+# column is EVERY deb Package: name that recipe produces.  pool-freshness
+# enforces both directions:
+#   * every package listed here must have a deb in repo/pool (a recipe whose
+#     output never reached the pool is invisible to users -- red, "run
+#     make-repo.sh");
+#   * every pool deb must be listed here (a pool deb no recipe claims cannot
+#     be rebuilt -- red, name the recipe).
+# Keep it in sync when adding a package; the completeness gate is the
+# reminder.
+#
+# multi-deb recipes list every deb they emit (net/curl ships curl4 AND
+# openssl4; lang/python3 ships python3 AND python314 via make-deb-314.sh).
+data/ca-certificates	ca-certificates4
+ffmpeg	ffmpeg
+lang/go	go4
+lang/lua	lua54
+lang/python3	python3,python314
+lang/quickjs	quickjs4
+lang/zsh	zsh4
+net/curl	curl4,openssl4
+net/dns	dns4
+net/dropbear	dropbear4
+net/ifconfig	ifconfig4
+net/iperf3	iperf34
+net/mosh	mosh
+net/netstat	netstat4
+net/nginx	nginx4
+net/nmap	nmap
+net/openssh	openssh4
+net/ping	ping4
+net/privoxy	privoxy4
+net/proxychains-ng	proxychains4
+net/rsync	rsync4
+net/socat	socat4
+net/tailcat	tailcat4
+net/tailscale	tailscale4
+net/tcpdump	tcpdump
+net/tor	tor4
+net/traceroute	traceroute4
+net/wget	wget4
+net/whois	whois4
+tools/caddy	caddy4
+tools/class-dump	class-dump4
+tools/entr	entr4
+tools/fzf	fzf4
+tools/git-lfs	git-lfs4
+tools/git	git
+tools/jq	jq
+tools/less	less4
+tools/lsof	lsof
+tools/lz4	lz4
+tools/make	make4
+tools/ncdu	ncdu4
+tools/p7zip	p7zip17
+tools/patch	patch4
+tools/pgrep	pgrep4
+tools/smalltools	smalltools4
+tools/sqlite	sqlite3
+tools/tig	tig4
+tools/tmux	tmux
+tools/uuid	uuidgen
+tools/vim	vim
+tools/zstd	zstd4
+net/dnscrypt-proxy	dnscrypt-proxy4
+net/obfs4proxy	obfs4proxy4
+net/torsocks	torsocks4

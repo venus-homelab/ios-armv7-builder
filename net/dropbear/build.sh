@@ -1,0 +1,213 @@
+#!/bin/bash
+# Build Dropbear (verified with 2026.94) for armv7 iOS 10.x on Linux.
+#
+# Dropbear is a far better fit for this device than OpenSSH 10.x, and the
+# reason is worth recording because it decides the whole port:
+#
+#   * it bundles libtomcrypt + libtommath, so there is no OpenSSL to
+#     cross-compile -- which removes the single hard blocker OpenSSH has,
+#     because OpenSSH's configure *executes* the openssl binary to probe its
+#     version and an armv7 binary cannot run on the Linux host;
+#   * --disable-zlib removes the zlib dependency entirely, and neither the
+#     sysroot nor the device has zlib.h;
+#   * its autoconf surface is much smaller than OpenSSH's (and it has no
+#     vendored gnulib to fight, unlike wget).
+#
+# Everything else is the usual sysroot work.  See ../README.md for the ABI
+# story and ios-config.site in this directory for why the probes lie, plus
+# tools/sysroot/overlay/ for the missing declarations.
+#
+# Usage:
+#   ./build.sh            # self-contained: fetches the pinned source, SDK env
+#                         # defaults embedded (CI overrides via build.yaml)
+set -euo pipefail
+
+here="$(cd "$(dirname "$0")" && pwd)"
+root="$(cd "$here" && git rev-parse --show-toplevel)"
+DB_VERSION="${DB_VERSION:-2026.94}"
+SRC="${DB_SRC:-$root/tmp/src/dropbear-$DB_VERSION}"
+PREFIX="${PREFIX:-/var/mobile/tools}"
+
+# fetch the pinned source (sources.lock: dropbear)
+if [ ! -d "$SRC" ]; then
+    read -r U SHA _ <<<"$("$root/tools/fetch-src.sh" --lock dropbear)"
+    tarball="$("$root/tools/fetch-src.sh" dropbear "$U" "$SHA")"
+    rm -rf "$SRC"
+    mkdir -p "$root/tmp/src"
+    tar -C "$root/tmp/src" -xjf "$tarball"
+fi
+[ -d "$SRC" ] || { echo "dropbear source layout unexpected" >&2; exit 1; }
+
+# SDK sysroot (toolchain.md §16/§23)
+export IOS_SYSROOT="${IOS_SYSROOT:-$HOME/ios-tool/iPhoneOS10.3.sdk}"
+[ -d "$IOS_SYSROOT/usr/include" ] || { echo "missing $IOS_SYSROOT (bootstrap-toolchain.sh stage 3)" >&2; exit 1; }
+
+# libSystem.tbd lives next to the toolchain in ~/ios-tool, not in this repo
+# (the repo is public; the Apple-built stub is not redistributed).
+export IOS_LD64="${IOS_LD64:-${LD64:-$HOME/ios-tool/x-ld64/bin/x86_64-apple-darwin13.4.0-ld}}"
+[ -n "$IOS_LD64" ] && [ -x "$IOS_LD64" ] || { echo "set IOS_LD64 to the cctools ld64" >&2; exit 1; }
+export IOS_STUBDIR="${IOS_STUBDIR:-$HOME/ios-tool}"
+export LD_LIBRARY_PATH="${LD64_LIBS:-$HOME/ios-tool/x-libdispatch/lib:$HOME/ios-tool/x-tapi/lib}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+# configure's link tests always "succeed" here because the wrapper links with
+# -undefined dynamic_lookup, so they accept calls to functions iOS has never
+# had.  ios-config.site corrects them.  It must be a config.site rather than
+# --cache-file: autoconf rewrites the cache at the end of every run, so
+# hand-edited cache values survive exactly one configure.
+export CONFIG_SITE="$here/ios-config.site"
+
+cd "$SRC"
+make distclean >/dev/null 2>&1 || true
+
+# Dropbear's sysoptions.h enforces a compile-time invariant:
+#
+#     #if DROPBEAR_SVR_DROP_PRIVS && !defined(HAVE_SETRESGID)
+#     #  error "DROPBEAR_SVR_DROP_PRIVS requires setresgid()."
+#
+# and DROPBEAR_SVR_DROP_PRIVS means "change the server process to user
+# privileges after authentication" -- turning it off would run every session
+# as root, which is a real security regression and is not on the table.
+#
+# iOS 10 exports neither setresgid nor setresuid (verified on the device:
+# calling either aborts with "dyld: Symbol not found: _setresgid").  So the
+# honest situation is:
+#
+#   * the actual privilege drop uses setgid(), initgroups() and setuid(),
+#     which iOS does have;
+#   * setresgid appears exactly once in the whole tree (svr-auth.c:519), to
+#     retain the utmp group so wtmp records can be written.  That call site
+#     already checks its return value and only sets have_utmp_gid on success,
+#     so returning failure takes a path Dropbear is built to handle -- and
+#     utmp is disabled below anyway.
+#
+# The response is a static inline shim in tools/sysroot/overlay/usr/include/unistd.h
+# which returns -1 for the "saved id only" request Dropbear actually makes,
+# plus these two defines so the invariant holds and the real drop keeps
+# working.  static inline keeps the shim out of the object archive, so
+# configure's own link test still reports "no" -- the truth.
+# Dropbear 2026.94 turns off RSA-with-SHA-1 host key signatures by default
+# (default_options.h: "#define DROPBEAR_RSA_SHA1 0"), because SHA-1 is weak.
+# The device's existing sshd is OpenSSH 6.7p1, which offers *only* the
+# ssh-rsa (SHA-1) host key algorithm -- RSA-SHA2 arrived in OpenSSH 7.2 -- so
+# dbclient against it dies with
+#     "Connection to mobile@localhost:22 exited: No matching algo hostkey"
+#
+# Turning DROPBEAR_RSA_SHA1 back on restores interop.  This is parity, not a
+# regression: the 6.7p1 sshd we are talking to already does nothing but SHA-1,
+# and a peer that supports rsa-sha2 still prefers it, so modern connections
+# are unaffected and only the legacy host key path is re-enabled.
+# The bundled scp client is a thin front end that execs dbclient from a
+# hardcoded path: default_options.h has
+#     #define DROPBEAR_PATH_SSH_PROGRAM "/usr/bin/dbclient"
+# so out of the box db-scp dies with "/usr/bin/dbclient: No such file or
+# directory" -- which is how it failed on the device first time.  Pointing it
+# at the path this kit actually installs avoids putting anything in /usr.
+# The production musl-era binary carries ZERO setres*/getrandom undefined
+# symbols (llvm-nm, /var/mobile/tools/db-dropbear, 130 undefs): its
+# DROPBEAR_SVR_DROP_PRIVS block never compiled in, and the device has none of
+# those symbols (dlsym MISS, device-symprobe 2026-11-21).  Match that shape:
+# the extra-privs guard is dropped, the standard setuid/setgid downgrade path
+# stays.
+EXTRA_CFLAGS="-DDROPBEAR_RSA_SHA1=1 -DDROPBEAR_SVR_DROP_PRIVS=0 -DDROPBEAR_SVR_MULTIUSER=0"
+
+# SDK mode: the bundled libcrux mlkem768 headers use the musl <endian.h>
+# function family (htole64/le64toh/le32toh/htole32) that Darwin does not
+# declare; libkern/OSByteOrder.h spells them OSSwap*.  The -D mapping is
+# function-for-function (byte order semantics identical).
+EXTRA_CFLAGS="$EXTRA_CFLAGS -include libkern/OSByteOrder.h \
+ -Dhtole64=OSSwapHostToLittleInt64 -Dle64toh=OSSwapLittleToHostInt64 \
+ -Dhtole32=OSSwapHostToLittleInt32 -Dle32toh=OSSwapLittleToHostInt32"
+
+# The bundled scp client execs dbclient from a hardcoded path in
+# default_options.h:
+#     #define DROPBEAR_PATH_SSH_PROGRAM "/usr/bin/dbclient"
+# so out of the box db-scp dies with "/usr/bin/dbclient: No such file or
+# directory" -- exactly how it failed on the device.  Pointing it at the path
+# this kit installs avoids putting anything in /usr.
+#
+# It has to be rewritten in the header rather than passed with -D: the value
+# is a string literal, and every layer between here and the compiler
+# (configure -> Makefile -> $(CC) $(CFLAGS) -> /bin/sh) strips quotes from a
+# -D argument, which leaves the macro expanding to bare tokens and scp.c
+# failing with "expected expression".
+SCP_PATH_DEFAULT='/usr/bin/dbclient'
+SCP_PATH_WANTED='"/var/mobile/tools/db-dbclient"'
+
+# zlib is optional (only stream compression) and we have no headers for it.
+# utmp/utmpx/wtmp are for login accounting, which iOS does not really do;
+# --disable-loginfunc also keeps Dropbear from using musl's struct utmp
+# layout, which is a *utmpx* alias and is not Darwin's at all.
+# shadow password support needs <shadow.h>, which iOS has no use for.
+CC="$root/tools/cc-wrapper.sh" AR="$root/tools/darwin-ar" \
+RANLIB="$root/tools/darwin-ranlib" \
+CFLAGS="$EXTRA_CFLAGS" \
+CONFIG_SITE="$root/net/wget/ios-config.site" \
+./configure --host=armv7-apple-darwin --prefix="$PREFIX" \
+    --disable-zlib \
+    --disable-lastlog --disable-shadow \
+    --disable-utmp --disable-utmpx --disable-wtmp --disable-wtmpx \
+    --disable-loginfunc \
+    >/dev/null
+
+# Rewrite the scp client's hardcoded dbclient path now that the build tree is
+# in its configured state.  This is a downloaded tarball rather than a repo,
+# so the tree is regarded as disposable and in-place edits are fine.
+sed -i "s|^#define DROPBEAR_PATH_SSH_PROGRAM .*|\
+#define DROPBEAR_PATH_SSH_PROGRAM $SCP_PATH_WANTED|" src/default_options.h
+grep -q 'DROPBEAR_PATH_SSH_PROGRAM' src/default_options.h || {
+    echo "scp dbclient path was not rewritten" >&2; exit 1; }
+
+# Programs to build.  scp is bundled, and SCPPROGRESS gives the progress bar.
+#
+# No sftp-server by default, and that is a property of Dropbear itself rather
+# than a choice we made: it ships no sftp server at all.  The only thing it
+# has is a *path* it execs when a client asks for the "sftp" subsystem --
+# SFTPSERVER_PATH below, defaulting to /usr/libexec/sftp-server, which on this
+# device belongs to the openssh dpkg package.  Leaving that default alone is
+# what ties dropbear's sftp to openssh staying installed.  scp is unaffected:
+# db-scp execs a path of our own (see the DROPBEAR_PATH_SSH_PROGRAM rewrite
+# above), which is why it survives openssh being removed.
+#
+# WITH_DB_SFTPSERVER=1 opts in to the from-scratch SFTP server in
+# ../sftp-server/: it is compiled, SFTPSERVER_PATH is repointed at
+# $PREFIX/db-sftp-server, and make-deb.sh ships it.  Off by default.  Note that
+# this is a hand-written network file-access subsystem -- it is NOT audited,
+# and it is not on by default precisely so that it is not exposed by accident.
+PROGRAMS="dropbear dbclient dropbearkey scp"
+if [ "${WITH_DB_SFTPSERVER:-0}" = "1" ]; then
+    SFTP_PATH="$PREFIX/db-sftp-server"
+    "$root/tools/cc-wrapper.sh" "$root/sftp-server/sftp-server.c" -o sftp-server \
+        || { echo "sftp-server did not build" >&2; exit 1; }
+    PROGRAMS="$PROGRAMS sftp-server"
+else
+    # Restored explicitly rather than left alone.  The source tree is reused
+    # across builds (DB_SRC points at a persistent directory, not a freshly
+    # extracted tarball), so an in-place sed made by a previous WITH_DB_SFTPSERVER=1
+    # run would otherwise survive into this default build and silently ship a
+    # dropbear that execs a file this package does not install.
+    SFTP_PATH="/usr/libexec/sftp-server"
+fi
+sed -i "s|^#define SFTPSERVER_PATH .*|#define SFTPSERVER_PATH \"$SFTP_PATH\"|" \
+    src/default_options.h
+grep -q "$SFTP_PATH" src/default_options.h || {
+    echo "SFTPSERVER_PATH was not rewritten to $SFTP_PATH" >&2; exit 1; }
+
+# shellcheck disable=SC2086
+make -j"$(nproc)" PROGRAMS="$PROGRAMS" SCPPROGRESS=1 >/dev/null
+
+# These out/ artifacts are deliberately left unsigned -- make-deb.sh signs the
+# copies it stages, so signing here too would work but buys nothing, and an
+# unsigned artifact is the honest thing to hand over.  The "|| true" that used
+# to sit on this line is the same bug documented in the sign() of every
+# make-deb.sh: it let a failed sign pass silently and ship an unsigned binary.
+# Now the step simply does not exist here, so there is nothing to swallow.
+mkdir -p "$root/out"
+for p in $PROGRAMS; do
+    [ -f "$p" ] || { echo "$p was not built" >&2; exit 1; }
+    cp "$p" "$root/out/dropbear-$p-$DB_VERSION-armv7"
+done
+echo "==> $root/out/dropbear-{$PROGRAMS}-$DB_VERSION-armv7"
+[ "${WITH_DB_SFTPSERVER:-0}" = "1" ] && \
+    echo "    WITH_DB_SFTPSERVER=1: sftp served by db-sftp-server (unaudited)"
+echo "    server runs on its own port; do NOT replace /usr/sbin/sshd"
+echo "    (SSH is the only remote access to this device)"

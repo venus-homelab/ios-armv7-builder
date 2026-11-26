@@ -1,0 +1,164 @@
+name: single-build (manual)
+# Build one package on a fresh runner -- the "retriage this package" button.
+# Same recipe as the full-build matrix jobs: it just calls the reusable
+# build.yaml with the package you name.
+#
+#   Actions -> single-build -> Run workflow -> package: curl
+#
+# publish (default true): after a green build, rebuild the APT repo from
+# the new deb + the live gh-pages pool and force-push it.  This is the
+# DEFAULT way packages ship now (the 19-package full-build matrix takes
+# ~15 min; a single build+publish takes ~3); full-build stays for periodic
+# whole-repo audits, run by hand.
+#
+# The pool merge lets the fresh deb win: it lands in out/ first, the live
+# pool's debs are copied in with cp -n (never clobber), and make-repo's
+# newest-revision logic picks the winner per package.  Rebuilding WITHOUT
+# bumping the deb rev therefore publishes nothing (same filename -> cp -n
+# keeps the old one) -- rev discipline is a prerequisite.
+concurrency:
+  # one gh-pages snapshot push at a time: concurrent publishes build
+  # their snapshots from a pool clone and the LAST push erases every
+  # deb the other run added (tor4-3 was erased by git4-2 on 2026-11-23)
+  group: gh-pages-publish
+  cancel-in-progress: false
+
+on:
+  workflow_dispatch:
+    inputs:
+      package:
+        description: Package (repo directory) to build
+        required: true
+        type: string
+      publish:
+        description: Publish the deb to the device repo after building
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: write # publish-gh-pages.sh force-pushes the gh-pages branch
+
+jobs:
+  build:
+    uses: ./.github/workflows/build.yaml
+    with:
+      package: ${{ inputs.package }}
+    secrets: inherit
+
+  publish:
+    needs: build
+    if: ${{ inputs.publish }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      # make-repo needs apt-ftparchive + gpg
+      - name: install host deps
+        run: sudo apt-get update -q && sudo apt-get install -y -q apt-utils gnupg
+      - id: pkg
+        name: derive the artifact id (must match build.yaml's rule)
+        run: echo "id=$(echo "${{ inputs.package }}" | tr '/' '-')" >> "$GITHUB_OUTPUT"
+      - name: collect this build's products
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ steps.pkg.outputs.id }}-out
+          path: out
+      - name: import the repo signing key
+        run: |
+          echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+      - name: merge the live pool and publish
+        run: |
+          set -euo pipefail
+          if ! ls out/*.deb >/dev/null 2>&1; then
+            echo "no deb from this build (library-only or data package) -- nothing to publish"
+            exit 0
+          fi
+          pubrc=0
+          if git clone -q --depth 1 --branch gh-pages \
+              https://github.com/${{ github.repository }} gh-live 2>/dev/null; then
+            # PRE-publish assertion (2026-11-24 audit P1): publish=true must
+            # move the live version FORWARD -- a candidate at/below the live
+            # version makes the whole run green while users keep the old
+            # metadata (make-repo keeps the pool's newest, the republish
+            # is a no-op).  Bump the recipe rev, or rerun publish=false.
+            for deb in out/*.deb; do
+              pkg=$(dpkg-deb -f "$deb" Package); ver=$(dpkg-deb -f "$deb" Version)
+              live=""
+              for ld in gh-live/repo/pool/*/*/"$pkg"/*.deb; do
+                [ -f "$ld" ] || continue
+                [ "$(dpkg-deb -f "$ld" Package)" = "$pkg" ] || continue
+                lv=$(dpkg-deb -f "$ld" Version)
+                if [ -z "$live" ] || [[ "$lv" > "$live" ]]; then live=$lv; fi
+              done
+              [ -z "$live" ] && continue    # first publish of this package
+              if [[ ! "$ver" > "$live" ]]; then
+                echo "FATAL $pkg: candidate $ver <= live $live -- bump the recipe rev, or rerun with publish=false" >&2
+                pubrc=1
+              fi
+            done
+            [ "$pubrc" -eq 0 ] || { echo "pre-publish assertion failed -- nothing published"; exit 1; }
+            find gh-live/repo/pool -name '*.deb' -exec cp -n {} out/ \; 2>/dev/null || true
+          else
+            echo "no live gh-pages to merge from (first publish?)"
+          fi
+          echo "pool after merge: $(ls out/*.deb | wc -l) debs"
+          scripts/make-repo.sh
+          # doc-rot gate (2026-11-23 review): the package table is
+          # regenerated from the pool we are ABOUT to publish and pushed
+          # back to main -- docs/PACKAGES.md can no longer describe a state
+          # the repo is not shipping (the tor -2 / proxychains4 gap that
+          # motivated the review item).
+          scripts/gen-package-table.sh
+          if ! git diff --quiet -- docs/PACKAGES.md; then
+            git config user.name venus-homelab
+            git config user.email venus-homelab@users.noreply.github.com
+            git add docs/PACKAGES.md
+            git commit -qm "sync PACKAGES.md from the pool (${{ inputs.package }} publish)"
+            git fetch -q origin main
+            git -c rebase.autoStash=true rebase -q origin/main || true
+            if git push -q https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git HEAD:main 2>/dev/null; then
+              echo "PACKAGES.md synced to main"
+            else
+              # non-fatal: the release itself is the primary job
+              echo "PACKAGES.md sync push failed -- release continues"
+            fi
+          fi
+          scripts/publish-gh-pages.sh
+          # POST-publish assertion: the live pool must now carry exactly the
+          # candidate (version AND sha256) -- green-but-not-published must
+          # be impossible (2026-11-24 audit P1; the tor -2 lost to a
+          # concurrent git4-2 publish was the original sin)
+          rm -rf gh-verify
+          if git clone -q --depth 1 --branch gh-pages \
+              https://github.com/${{ github.repository }} gh-verify 2>/dev/null; then
+            for deb in out/*.deb; do
+              pkg=$(dpkg-deb -f "$deb" Package); ver=$(dpkg-deb -f "$deb" Version)
+              want=$(sha256sum "$deb" | awk '{print $1}')
+              found=""; found_sha=""
+              for ld in gh-verify/repo/pool/*/*/"$pkg"/*.deb; do
+                [ -f "$ld" ] || continue
+                [ "$(dpkg-deb -f "$ld" Package)" = "$pkg" ] || continue
+                lv=$(dpkg-deb -f "$ld" Version)
+                if [ -z "$found" ] || [[ "$lv" > "$found" ]]; then
+                  found=$lv; found_sha=$(sha256sum "$ld" | awk '{print $1}')
+                fi
+              done
+              if [ "$found" != "$ver" ] || [ "$found_sha" != "$want" ]; then
+                echo "FATAL $pkg: publish 后线上为 ${found:-无}/sha≠候选($ver) -- publish 静默失败" >&2
+                pubrc=1
+              fi
+            done
+            [ "$pubrc" -eq 0 ] && echo "post-publish: 线上池与候选一致 ✓"
+          else
+            echo "FATAL: 发布后拉不到 gh-pages -- 推送未生效" >&2
+            pubrc=1
+          fi
+          exit $pubrc
+        env:
+          # publish-gh-pages pushes from a throwaway git-init dir, where
+          # checkout's credential extraheader does not exist -> 128.  Hand
+          # it an authenticated URL explicitly.
+          PUBLISH_URL: https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git

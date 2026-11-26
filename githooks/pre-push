@@ -1,0 +1,30 @@
+#!/bin/bash
+# githooks/pre-push -- the last local gate before commits leave the box.
+# Runs the commit-content gates again (cheap) + the pool-freshness check
+# (~2s).  The heavy payload signature audit does NOT live here -- it runs
+# at the publish chokepoint (scripts/make-repo.sh) where the pool exists;
+# duplicating it over out/'s whole revision history made pre-push take
+# >10 minutes (2026-11-24).
+#
+# A red pool blocks the push; ALLOW_RED_POOL=1 downgrades it to a loud
+# warning for known-pending states (e.g. node4 waiting for its rebuild).
+set -u
+cd "$(git rev-parse --show-toplevel)" || exit 1
+rc=0
+step() { printf '== %s\n' "$1"; }
+
+step "commit-content gates"
+bash githooks/pre-commit || rc=1
+
+step "pool-freshness (recipe vs pool metadata/revs)"
+if bash tools/pool-freshness.sh; then :; else
+    if [ "${ALLOW_RED_POOL:-0}" = 1 ]; then
+        echo "pre-push: RED POOL allowed by ALLOW_RED_POOL=1 -- the drift ships, fix it next"
+    else
+        echo "pre-push: RED POOL -- fix it, or export ALLOW_RED_POOL=1 for a known-pending state"
+        rc=1
+    fi
+fi
+
+if [ "$rc" -eq 0 ]; then echo "pre-push: ALL GATES GREEN"; else echo "pre-push: RED -- push rejected"; fi
+exit $rc

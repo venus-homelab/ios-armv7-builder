@@ -1,0 +1,56 @@
+.codegraph/
+tmp/
+out/
+# APT repo tree: regenerable via scripts/make-repo.sh; binaries are published
+# to the gh-pages branch (scripts/publish-gh-pages.sh), never committed here.
+repo/
+
+# build byproducts from sftp-server/
+sftp-server/*.o
+sftp-server/test/__pycache__/
+
+# Device-specific operating notes.  Never published: what is installed on my iPad 4,
+# how it differs from the released defaults, and how to undo any of it.
+DEVICE.md
+
+# node port: large device-generated snapshot blobs are re-generable via
+# node/patches/snapshot/README.md procedure; keep only sources in git.
+node/patches/snapshot/embedded_S_v10.txt
+
+# uuid/build.sh 生成的 shim（每次重建）
+uuid/obj/
+
+# ffmpeg build dir
+ffmpeg/obj/
+
+# python3 build dirs.  These are configure output trees (Makefile,
+# pyconfig.h, config.status) plus hundreds of .o/.so archives -- ~95MB,
+# fully regenerable by running build.sh.  They slipped into git via
+# fa586ce..019a5e3 before this rule existed; the files were untracked in
+# the commit that added this line.  3.13 and 3.14 use separate trees when
+# they coexist (see docs/python.md).  2026-11-25: the package dir moved to
+# lang/python3/ -- the old root-relative patterns stopped matching and 72
+# obj/ files got tracked again on the next `git add`; new patterns below,
+# untracked with `git rm -r --cached`.
+lang/python3/obj/
+lang/python3/obj3*/
+python3/obj/
+python3/obj3*/
+obj313/
+
+# cc-wrapper link mode drops .o next to sources
+ifconfig/ifconfig.tproj/*.o
+ifconfig/route.tproj/*.o
+*.o
+tests/REPORT.md
+
+# any python bytecode cache, any depth (patches/__pycache__ included)
+__pycache__/
+
+# docs/: private working notes (intranet IPs, device details) -- never
+# published.  Files stay on disk; only git tracking is dropped (2026-11-26).
+docs/
+
+# iperf3 upstream source + configure build tree: never tracked (package
+# convention is patches + scripts only; src/ is a regenerable tarball drop).
+net/iperf3/src/

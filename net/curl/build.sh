@@ -1,0 +1,254 @@
+#!/bin/bash
+# Build curl (verified with 8.16.0) for armv7 iOS 10.x on Linux.
+#
+# Depends on an OpenSSL built by ../openssl/build.sh: curl links libssl.a and
+# libcrypto.a statically, so there is no runtime dependency on libssl.dylib.
+#
+# Everything here was discovered through on-device crashes; see ../README.md
+# for the full ABI story.  The three that matter most for curl:
+#
+#   * SOCK_NONBLOCK / SOCK_CLOEXEC do not exist on iOS 10.  musl defines them
+#     as Linux type flags (0x80000 / 0x80000); curl ORs SOCK_NONBLOCK into
+#     the socket() type, which the kernel rejects with EINVAL, making every
+#     connection fail in ~1 ms with "Failed initialization".  The sysroot
+#     undefines both so curl falls back to fcntl(F_SETFL).
+#   * struct sockaddr needs Darwin's leading sa_len byte (and sockaddr_in
+#     gains sin_len).  Without it, inet_ntop() reads a 16-bit family at
+#     offset 0 and returns EAFNOSUPPORT.
+#   * configure's link tests always "succeed" because we link with
+#     -undefined dynamic_lookup, so curl detects Linux-only functions
+#     (eventfd, pipe2, accept4, recvmmsg, sendmmsg, getpass_r, gsasl) that
+#     do not exist on iOS.  They are undefined in lib/curl_config.h below.
+set -euo pipefail
+
+here="$(cd "$(dirname "$0")" && pwd)"
+root="$(cd "$here" && git rev-parse --show-toplevel)"
+CURL_VERSION="${CURL_VERSION:-8.16.0}"
+NGHTTP2_VERSION="${NGHTTP2_VERSION:-1.71.0}"
+BROTLI_VERSION="${BROTLI_VERSION:-1.2.1}"
+ZSTD_VERSION="${ZSTD_VERSION:-1.5.7}"
+SRC="$root/tmp/src/curl-$CURL_VERSION"
+OSSL="${OSSL:-$root/tmp/src/openssl-4.0.3}"
+PREFIX="${PREFIX:-/var/mobile/tools}"
+
+
+[ -d "$SRC" ] || {
+    read -r U SHA _ <<<"$("$root/tools/fetch-src.sh" --lock curl)"
+    tarball="$("$root/tools/fetch-src.sh" curl "$U" "$SHA")"
+    rm -rf "$SRC"
+    tar -C "$root/tmp/src" -xzf "$tarball"
+}
+# Self-contained dependency: the matrix builds packages on independent
+# runners in no particular order, so curl brings its own OpenSSL.
+# OpenSSL 4 opaque'd ASN1_STRING (nmap hit the identical wall -- commit
+# ee784f0 patched its nse_ssl_cert.cc the same way): curl 8.16 predates it
+# and dereferences num->type/length/data in the serial-number printer.
+# Function-API rewrite, applied to the pristine tree right after unpack.
+# and, for the dereference sites a sed cannot enumerate exhaustively, a
+# compat header restores the (ABI-stable) ASN1_STRING layout under -include:
+# openssl 4 forward-declares it opaque, libcrypto's own layout is unchanged.
+mkdir -p "$root/tmp/curl-asn1-compat"
+cat > "$root/tmp/curl-asn1-compat/openssl-asn1-compat.h" <<'EOF'
+/* curl 8.16 vs openssl 4: ASN1_STRING went opaque (struct asn1_string_st is
+   forward-declared only) but curl dereferences .type/.length/.data.  The
+   layout is ABI-stable since 0.9.x. */
+#ifndef CURL_ASN1_COMPAT_H
+#define CURL_ASN1_COMPAT_H
+/* deliberately self-contained: no openssl include here -- this header is
+   force-included before configure's own conftests, which run before any
+   -I$OSSL is set up */
+struct asn1_string_st {
+    int length;
+    int type;
+    unsigned char *data;
+    long flags;
+};
+#endif /* CURL_ASN1_COMPAT_H */
+EOF
+sed -i \
+    -e 's|if(num->type == V_ASN1_NEG_INTEGER)|if(ASN1_STRING_type(num) == V_ASN1_NEG_INTEGER)|' \
+    -e 's|for(j = 0; j < num->length; j++)|for(j = 0; j < ASN1_STRING_length(num); j++)|' \
+    -e 's|BIO_printf(mem, "%02x", num->data\[j\]);|BIO_printf(mem, "%02x", ASN1_STRING_get0_data(num)[j]);|' \
+    "$SRC/lib/vtls/openssl.c" && echo "    asn1 opaque patch applied" || { echo "asn1 patch FAILED" >&2; exit 1; }
+
+[ -f "$OSSL/libssl.a" ] || {
+    echo "==> building OpenSSL first (curl's static dependency)"
+    (cd "$root/net/openssl" && ./build.sh)
+}
+[ -f "$OSSL/libssl.a" ] || { echo "OpenSSL build did not produce $OSSL/libssl.a" >&2; exit 1; }
+# sysroot: the 2026-11-15 ruling makes the REAL Apple SDK the default for
+# ports.  curl 8.16.0 predated it and shipped with the musl-derived sysroot,
+# whose Linux TCP option numbers made the default keepalive setup set
+# TCP_NOPUSH (musl TCP_KEEPIDLE=4 collides with Darwin's 0x04) -- every
+# request then sat corked in the kernel for ~5s (device curl report,
+# 2026-11-19).  The SDK's own headers carry the real Darwin constants.
+# Override with IOS_SYSROOT=$root/tmp/sysroot for the legacy musl build.
+export IOS_SYSROOT="${IOS_SYSROOT:-$HOME/ios-tool/iPhoneOS10.3.sdk}"
+[ -d "$IOS_SYSROOT/usr/include" ] || { echo "missing $IOS_SYSROOT (see docs/toolchain.md §16)" >&2; exit 1; }
+# env defaults embedded (toolchain.md §1 landmine, 4th occurrence): a fresh
+# shell must never depend on the caller having exported the toolchain vars
+export IOS_LD64="${IOS_LD64:-${LD64:-$HOME/ios-tool/x-ld64/bin/x86_64-apple-darwin13.4.0-ld}}"
+export IOS_STUBDIR="${IOS_STUBDIR:-$HOME/ios-tool}"
+export LD_LIBRARY_PATH="${LD64_LIBS:-$HOME/ios-tool/x-libdispatch/lib:$HOME/ios-tool/x-tapi/lib}:${LD_LIBRARY_PATH:-}"
+export CROSS_TOP="$(dirname "$IOS_SYSROOT")" CROSS_SDK="$(basename "$IOS_SYSROOT")"
+
+# configure looks for <prefix>/lib/libssl.a; OpenSSL's build tree keeps the
+# archives in its root.  Give it the layout it expects.
+mkdir -p "$OSSL/lib"
+ln -sfn ../libcrypto.a "$OSSL/lib/libcrypto.a"
+ln -sfn ../libssl.a "$OSSL/lib/libssl.a"
+
+cd "$SRC"
+make distclean >/dev/null 2>&1 || true
+
+export CC="$root/tools/cc-wrapper.sh" AR="$root/tools/darwin-ar" \
+RANLIB="$root/tools/darwin-ranlib"
+
+# __atomic_is_lock_free shim (docs/go.md wall #7): the OpenSSL 4.0.3 static
+# archives (2026-11-16 rebuild) reference the clang builtin, iOS 10 libSystem
+# has the load/store/CAS operators but NOT the predicate -- same dangling
+# reference nginx hit.  Link the shared honest thumb shim.
+C8OBJ="$root/tmp/curl-c8fixed.o"
+mkdir -p "$root/tmp"
+"$CC" -c "$root/tools/shims/c8fixed.S" -o "$C8OBJ"
+
+# zlib (gzip/deflate transfer encoding).  Self-contained cross build of the
+# pinned 1.3.1 (git/build.sh's recipe: configure --static, then the §2
+# darwin-ar conversion with a member-count check), cached in the ABI dir so
+# a rebuild is a cache hit.  configure wants <prefix>/lib/libz.a +
+# <prefix>/include/zlib.h.
+ZLIBABI="$root/tmp/curl-zlib-abi"
+mkdir -p "$ZLIBABI/lib" "$ZLIBABI/include"
+if [ ! -f "$ZLIBABI/lib/libz.a" ]; then
+    ZLIB_SRC="${ZLIB:-$root/tmp/src/zlib-1.3.1}"
+    if [ ! -f "$ZLIB_SRC/libz.a" ]; then
+        read -r ZU ZSHA _ <<<"$("$root/tools/fetch-src.sh" --lock zlib)"
+        ztar="$("$root/tools/fetch-src.sh" zlib "$ZU" "$ZSHA")"
+        rm -rf "$ZLIB_SRC"
+        tar -C "$root/tmp/src" -xzf "$ztar"
+        ( cd "$ZLIB_SRC" \
+          && CC="$CC" AR="$root/tools/darwin-ar" RANLIB="$root/tools/darwin-ranlib" \
+             CHOST=armv7-apple-darwin ./configure --static >/dev/null \
+          && make -j"$(nproc)" libz.a >/dev/null )
+        # sorted members: a bare glob archives in readdir order, and archive
+        # member order shuffles ld64's output layout (byte-A/B finding)
+        # shellcheck disable=SC2086
+        "$root/tools/darwin-ar" rcs "$ZLIB_SRC/libz.a.new" $(ls "$ZLIB_SRC"/*.o | LC_ALL=C sort)
+        [ "$("$root/tools/darwin-ar" t "$ZLIB_SRC/libz.a.new" | wc -l)" -gt 0 ] \
+            || { echo "libz.a conversion produced 0 members" >&2; exit 1; }
+        mv "$ZLIB_SRC/libz.a.new" "$ZLIB_SRC/libz.a"
+    fi
+    cp -f "$ZLIB_SRC/libz.a" "$ZLIBABI/lib/"
+    cp -f "$ZLIB_SRC/zlib.h" "$ZLIB_SRC/zconf.h" "$ZLIBABI/include/"
+fi
+
+# nghttp2 (HTTP/2).  Cross-built here from the sources.lock-pinned release:
+# lib-only (pure C), static, darwin-ar archives.  curl's configure wants the
+# standard prefix shape: <dir>/include/nghttp2/nghttp2.h + <dir>/lib/libnghttp2.a.
+NG2_SRC="$root/tmp/src/nghttp2-$NGHTTP2_VERSION"
+if [ ! -f "$NG2_SRC/lib/.libs/libnghttp2.a" ]; then
+    read -r N2URL N2SHA _ <<<"$("$root/tools/fetch-src.sh" --lock nghttp2)"
+    n2tar="$("$root/tools/fetch-src.sh" nghttp2 "$N2URL" "$N2SHA")"
+    [ -d "$NG2_SRC" ] || tar -C "$root/tmp/src" -xzf "$n2tar"
+    # cmake build (brotli's proven cross pattern): the autotools path passes
+    # locally but its conftest probing dies on the CI runner for reasons
+    # config.log refuses to show -- cmake has no probes to lie.
+    ( cd "$NG2_SRC" && rm -rf build-armv7 && mkdir -p build-armv7 && cd build-armv7 \
+      && cmake .. -DCMAKE_SYSTEM_NAME=Darwin -DCMAKE_SYSTEM_PROCESSOR=armv7 \
+             -DCMAKE_C_COMPILER="$CC" -DCMAKE_AR="$root/tools/darwin-ar" \
+             -DCMAKE_RANLIB="$root/tools/darwin-ranlib" \
+             -DENABLE_LIB_ONLY=ON -DBUILD_SHARED_LIBS=OFF -DBUILD_STATIC_LIBS=ON -DCMAKE_BUILD_TYPE=Release \
+             -DCMAKE_C_FLAGS="-ffile-prefix-map=$root/=" \
+             >/dev/null \
+      && cmake --build . -j"$(nproc)" >/dev/null )
+    # -ffile-prefix-map (2026-11-24 byte-A/B wall #4 variant): nghttp2 embeds
+    # __FILE__ paths of a dozen lib/*.c into the archive; mapped to the shared
+    # relative form the two independent builds become byte-identical.  The
+    # other curl subbuilds (openssl/zlib/brotli/zstd) embed no host paths.
+fi
+[ -f "$NG2_SRC/build-armv7/lib/libnghttp2.a" ] || { echo "nghttp2 build failed (no build-armv7/lib/libnghttp2.a)" >&2; exit 1; }
+NG2ABI="$root/tmp/curl-nghttp2-abi"
+mkdir -p "$NG2ABI/lib" "$NG2ABI/include/nghttp2"
+cp -f "$NG2_SRC/build-armv7/lib/libnghttp2.a" "$NG2ABI/lib/"
+cp -f "$NG2_SRC/lib/includes/nghttp2/nghttp2.h" \
+      "$NG2_SRC/lib/includes/nghttp2/nghttp2ver.h" "$NG2ABI/include/nghttp2/"
+
+# brotli (br transfer encoding).  cmake-driven cross build (brotli has no
+# autotools); CMAKE_SYSTEM_NAME=Darwin + the repo's cc-wrapper/darwin-ar.
+# The three static archives land at the build tree root.
+BROTLI_SRC="$root/tmp/src/brotli-$BROTLI_VERSION"
+if [ ! -f "$BROTLI_SRC/build-armv7/libbrotlienc.a" ]; then
+    read -r BRURL BRSHA _ <<<"$("$root/tools/fetch-src.sh" --lock brotli)"
+    brtar="$("$root/tools/fetch-src.sh" brotli "$BRURL" "$BRSHA")"
+    [ -d "$BROTLI_SRC" ] || tar -C "$root/tmp/src" -xzf "$brtar"
+    ( cd "$BROTLI_SRC" && rm -rf build-armv7 && mkdir -p build-armv7 && cd build-armv7 \
+      && cmake .. -DCMAKE_SYSTEM_NAME=Darwin -DCMAKE_SYSTEM_PROCESSOR=armv7 \
+             -DCMAKE_C_COMPILER="$CC" -DCMAKE_AR="$root/tools/darwin-ar" \
+             -DCMAKE_RANLIB="$root/tools/darwin-ranlib" \
+             -DBUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=Release >/dev/null \
+      && cmake --build . --target brotlicommon brotlienc brotlidec -j"$(nproc)" >/dev/null )
+fi
+[ -f "$BROTLI_SRC/build-armv7/libbrotlienc.a" ] || { echo "brotli build failed" >&2; exit 1; }
+BRABI="$root/tmp/curl-brotli-abi"
+mkdir -p "$BRABI/lib" "$BRABI/include/brotli"
+cp -f "$BROTLI_SRC/build-armv7/"libbrotli*.a "$BRABI/lib/"
+cp -f "$BROTLI_SRC/c/include/brotli/"*.h "$BRABI/include/brotli/"
+
+# zstd (zstd transfer encoding).  Plain-make cross build (zstd's lib/Makefile
+# honours CC/AR); its GNU-ar output must be re-archived darwin-style (§2).
+ZSTD_SRC="$root/tmp/src/zstd-$ZSTD_VERSION"
+if [ ! -f "$ZSTD_SRC/lib/libzstd.a" ]; then
+    read -r ZU ZSHA _ <<<"$("$root/tools/fetch-src.sh" --lock zstd)"
+    ztar="$("$root/tools/fetch-src.sh" zstd "$ZU" "$ZSHA")"
+    [ -d "$ZSTD_SRC" ] || tar -C "$root/tmp/src" -xzf "$ztar"
+    ( cd "$ZSTD_SRC/lib" \
+      && CC="$CC" AR="$root/tools/darwin-ar" RANLIB="$root/tools/darwin-ranlib" \
+         make -j"$(nproc)" libzstd.a >/dev/null )
+    # verify/re-pack: automake-free make may still emit a GNU thin archive
+    if [ "$("$root/tools/darwin-ar" t "$ZSTD_SRC/lib/libzstd.a" 2>/dev/null | wc -l)" -eq 0 ]; then
+        # sorted members: same readdir-order rule as the zlib repack above
+        # shellcheck disable=SC2086
+        "$root/tools/darwin-ar" rcs "$ZSTD_SRC/lib/libzstd.a.new" $(ls "$ZSTD_SRC/lib"/*.o | LC_ALL=C sort)
+        [ "$("$root/tools/darwin-ar" t "$ZSTD_SRC/lib/libzstd.a.new" | wc -l)" -gt 0 ] \
+            || { echo "libzstd.a repack produced 0 members" >&2; exit 1; }
+        mv "$ZSTD_SRC/lib/libzstd.a.new" "$ZSTD_SRC/lib/libzstd.a"
+    fi
+fi
+[ -f "$ZSTD_SRC/lib/libzstd.a" ] || { echo "zstd build failed" >&2; exit 1; }
+ZABI="$root/tmp/curl-zstd-abi"
+mkdir -p "$ZABI/lib" "$ZABI/include"
+cp -f "$ZSTD_SRC/lib/libzstd.a" "$ZABI/lib/"
+cp -f "$ZSTD_SRC/lib/zstd.h" "$ZSTD_SRC/lib/zstd_errors.h" \
+      "$ZSTD_SRC/lib/zdict.h" "$ZABI/include/" 2>/dev/null || \
+cp -f "$ZSTD_SRC/lib/zstd.h" "$ZABI/include/"
+
+./configure --host=armv7-apple-darwin --prefix="$PREFIX" \
+    --disable-shared --enable-static \
+    CPPFLAGS="-include $root/tmp/curl-asn1-compat/openssl-asn1-compat.h" \
+    --with-openssl="$OSSL" \
+    --with-zlib="$ZLIBABI" \
+    --with-nghttp2="$NG2ABI" \
+    --with-brotli="$BRABI" \
+    --with-zstd="$ZABI" \
+    --without-libpsl --without-libidn2 \
+    --without-libgsasl \
+    --disable-ldap --disable-ldaps --disable-manual \
+    --disable-threaded-resolver \
+    LDFLAGS="$C8OBJ -Wl,-no_uuid" \
+    >/dev/null
+
+# Link tests lie (see header comment): turn off everything iOS 10 lacks.
+for fn in HAVE_EVENTFD HAVE_SYS_EVENTFD_H HAVE_PIPE2 HAVE_ACCEPT4 \
+          HAVE_RECVMMSG HAVE_SENDMMSG HAVE_GETPASS_R \
+          HAVE_GETADDRINFO_A HAVE_PTHREAD_SETNAME_NP; do
+    sed -i "s|^#define $fn 1\$|/* #undef $fn */|" lib/curl_config.h
+done
+
+make -j"$(nproc)" >/dev/null
+
+ldid -S src/curl
+mkdir -p "$root/out"
+cp src/curl "$root/out/curl-$CURL_VERSION-armv7"
+echo "==> $root/out/curl-$CURL_VERSION-armv7"
+echo "    install: scp to $PREFIX/curl, then ldid -S on the device"
+echo "    set SSL_CERT_FILE=/etc/ssl/cert.pem for HTTPS"

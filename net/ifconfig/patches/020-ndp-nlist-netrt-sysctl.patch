@@ -1,0 +1,29 @@
+--- a/ndp.tproj/ndp.c
++++ b/ndp.tproj/ndp.c
+@@ -127,8 +127,16 @@
+ 
+ #include <netdb.h>
+ #include <errno.h>
+-#include <nlist.h>
++/* <nlist.h>: included but never used upstream; iOS SDK lacks it — 2026-11-20 */
+ #include <stdio.h>
++/* xnu-3789 bsd/sys/socket.h private NET_RT nodes (kernel header values);
++ * the iOS 10.3 SDK's public socket.h stops at NET_RT_DUMP2. */
++#ifndef NET_RT_DUMPX
++#define	NET_RT_DUMPX		8	/* private */
++#endif
++#ifndef NET_RT_DUMPX_FLAGS
++#define	NET_RT_DUMPX_FLAGS	9	/* private */
++#endif
+ #include <string.h>
+ #include <paths.h>
+ #include <err.h>
+@@ -1595,7 +1603,7 @@
+ 
+ 	oldn = sizeof oldb;
+ 	error = sysctlbyname("net.inet6.send.cga_parameters", oldb, &oldn,
+-	    NULL, NULL);
++	    NULL, 0);	/* newlen is size_t: NULL was an upstream type bug */
+ 	if (error != 0)
+ 		err(1, "sysctlbyname");
+ 

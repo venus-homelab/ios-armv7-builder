@@ -1,0 +1,38 @@
+#!/bin/bash
+# githooks/pre-commit -- the commit-content gates, run locally (GitHub
+# suspended 2026-11-24: the CI gates must not depend on the runner).
+# Fast, deterministic, working-tree-only.  The pool/artifact battery lives
+# in githooks/pre-push.
+set -u
+
+# self-check: hooks only run when core.hooksPath points here, and a fresh
+# clone has that config unset -- warn loudly instead of guarding in silence
+# (2026-11-25 audit item 1; fix = tools/bootstrap-hooks.sh).
+if [ "$(git config --get core.hooksPath 2>/dev/null)" != "githooks" ]; then
+    echo "WARN: hooks 未启用(core.hooksPath != githooks)→ 运行 tools/bootstrap-hooks.sh" >&2
+fi
+cd "$(git rev-parse --show-toplevel)" || exit 1
+rc=0
+step() { printf '== %s\n' "$1"; }
+
+step "doc-rot self-test (the gate must prove it catches)"
+bash tools/doc-rot-check.sh --self-test || rc=1
+step "doc-rot"
+bash tools/doc-rot-check.sh || rc=1
+step "layout-gate"
+bash tools/layout-gate.sh || rc=1
+step "inventory-gate"
+bash tools/inventory-gate.sh || rc=1
+step "lock-coverage"
+bash tools/lock-coverage.sh || rc=1
+step "bash -n (maintained scripts)"
+fail=0
+for s in tools/*.sh scripts/*.sh tests/*.sh */build.sh */make-deb*.sh; do
+    [ -f "$s" ] || continue
+    case "$s" in src/*|*/src/*) continue;; esac
+    bash -n "$s" 2>/dev/null || { echo "SYNTAX FAIL: $s"; fail=1; }
+done
+[ "$fail" -eq 0 ] || rc=1
+
+if [ "$rc" -eq 0 ]; then echo "pre-commit: ALL GATES GREEN"; else echo "pre-commit: RED -- commit rejected"; fi
+exit $rc

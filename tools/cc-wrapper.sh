@@ -1,0 +1,217 @@
+#!/bin/bash
+# Cross compiler driver: compiles for armv7-apple-ios10.3 with clang and links
+# with cctools ld64.  Configured entirely through environment variables:
+#
+#   IOS_SYSROOT   path to the hand-made sysroot      (required)
+#   IOS_LD64      path to x86_64-apple-darwin*-ld    (required)
+#   IOS_STUBDIR   dir holding libSystem.tbd          (required)
+#   IOS_DYLIBS    extra device dylibs to link, ':'-separated (optional)
+#
+# Notes learned the hard way:
+#   * never force -o: autoconf probes the object suffix and preprocesses to stdout
+#   * GNU ar archives are unreadable by ld64; callers must use a Darwin ar
+#   * symbols are left undefined on purpose and resolved from the device's
+#     libSystem / libncurses at runtime
+set -u
+
+REAL_CLANG="${REAL_CLANG:-clang}"
+SYSROOT="${IOS_SYSROOT:?IOS_SYSROOT not set}"
+LD64="${IOS_LD64:?IOS_LD64 not set}"
+STUBDIR="${IOS_STUBDIR:?IOS_STUBDIR not set}"
+DYLIBS="${IOS_DYLIBS:-}"
+
+# Response-file expansion (2026-11-24, node libopenssl.a/libnode.a/openssl-cli):
+# gyp archive/link recipes inline EVERY member into one sh -c command string;
+# past ~1000 members that string crosses the kernel's MAX_ARG_STRLEN (128 KB
+# per single argument) and execve dies with E2BIG -> "make: printf: Argument
+# list too long" -> Error 127 -> with -k, every target holding the archive as
+# an (even order-only) prerequisite is skipped.  The makefile now stages the
+# member list in $(target).rsp via GNU make $(file ...) (in-process, no exec)
+# and passes @file; expand it IN PLACE here so member order is preserved
+# exactly.  Paths are whitespace-free by construction (obj tree under the
+# build root); no prior caller ever passed an @argument.
+ARGS=()
+for a in "$@"; do
+  if [ "${a#@}" != "$a" ] && [ -f "${a#@}" ]; then
+    for r in $(cat "${a#@}"); do ARGS+=("$r"); done
+  else
+    ARGS+=("$a")
+  fi
+done
+set -- ${ARGS[@]+"${ARGS[@]}"}
+
+mode_compile=0
+mode_dep=0
+for a in "$@"; do case "$a" in -c|-S|-E) mode_compile=1;; -M|-MM|-MD|-MMD) mode_dep=1;; esac; done
+
+# SOURCE_DATE_EPOCH mtime normalization (2026-11-25, python3/314 determinism):
+# the STABS N_OSO entry of every object embeds the .o file's mtime (unix
+# time) into each linked Mach-O, so two identical builds minutes apart
+# differ byte-wise.  When the caller exports SOURCE_DATE_EPOCH, touch every
+# artifact this script produces to that instant.  Opt-in per caller; unset
+# env = behaviour unchanged for every other package.
+SDE="${SOURCE_DATE_EPOCH:-}"
+touch_sde() { [ -n "$SDE" ] && touch -d "@$SDE" "$1"; }
+
+TGT=(-target armv7-apple-ios10.3 -isysroot "$SYSROOT")
+
+# __ARM_EABI__ is the GNU/EABI spelling that says "this target follows the
+# ARM EABI (AAPCS) procedure-call ABI".  clang does not define it for
+# Apple triples -- Apple's toolchains predate the macro and their ABI is
+# AAPCS by construction -- but V8's src/codegen/arm/constants-arm.h has a
+# hard #error when a 32-bit ARM target lacks it, and Apple's armv7 *is*
+# a conformant EABI target.  Defining it here is a statement of fact, not
+# a workaround: the whole port rests on the armv7 ABI being EABI.
+EARGS=(-D__ARM_EABI__)
+
+# Dependency-scan invocations (-M/-MM/...) must pass through untouched:
+# in compile mode clang's -o would name the *dependency output file*, and
+# in link mode this script would "compile every source and link it",
+# poisoning every scanned object with an ASCII dependency list (nsock's
+# makefile.dep rule was the first victim).  Keep the target triplet and
+# the EABI define, hand the rest straight to clang (stdout lands in the
+# caller's redirection, e.g. nsock's makefile.dep).
+if [ $mode_dep = 1 ]; then
+  exec "$REAL_CLANG" "${TGT[@]}" "${EARGS[@]}" "$@"
+fi
+
+FRAMEWORKS=()
+OUTPUT=a.out; HAS_OUTPUT=0; IS_BUNDLE=0
+SRCS=(); OBJS=(); CFLAGS=(); LDARGS=()
+
+TGT=(-target armv7-apple-ios10.3 -isysroot "$SYSROOT")
+
+
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -c|-S|-E) CFLAGS+=("$1") ;;
+    # -Wl, 必须在扩展名匹配之前：其载荷可能以 .dylib/.a/.o 结尾，会被
+    # 下面的输入文件模式整段吞掉（proxychains-ng -Wl,-install_name,... 踩出）
+    -Wl,--start-group|-Wl,--end-group) ;;   # GNU-ld grouping: ld64 scans
+                                             # archives iteratively anyway
+    -Wl,*) IFS=, read -r -a _wl <<< "${1#-Wl,}"   # GNU -Wl,a,b 逗号语义：
+                                                   # 拆成独立参数再喂 ld64
+                                                   # （-dynamic,-search_paths_
+                                                   # first 整串直传会 unknown
+                                                   # option；ffmpeg 踩出）
+            for _f in "${_wl[@]}"; do LDARGS+=("$_f"); done ;;
+    -o) shift; OUTPUT="$1"; HAS_OUTPUT=1 ;;
+    *.c|*.cpp|*.cc|*.cxx|*.m|*.mm|*.s|*.S) SRCS+=("$1") ;;
+    *.o) [ $mode_compile -eq 1 ] && CFLAGS+=("$1") || OBJS+=("$1") ;;
+    *.a|*.dylib|*.tbd) OBJS+=("$1") ;;
+    -shared|-dynamiclib) LDARGS+=("-dylib") ;;
+    -bundle) LDARGS+=("-bundle"); IS_BUNDLE=1 ;;   # Python C extensions are
+                                                   # Mach-O bundles: they must
+                                                   # NOT get -e _main
+                                                   # (2026-11-16: extensions
+                                                   # failed to dlopen with
+                                                   # "Symbol not found: _main")
+    -static) ;;
+    -pie) LDARGS+=("-pie") ;;
+    -rdynamic) ;;   # GNU: export all; darwin controls exports differently
+    -L*) LDARGS+=("$1") ;;
+    -F*) CFLAGS+=("$1"); LDARGS+=("$1") ;;     # 框架路径双投递：前端找头 + ld64 找 tbd（2026-11-14 class-dump 首次需要）
+    -lSystem|-lc|-lm|-lpthread|-lutil|-lresolv|-ldl|-lrt|-lintl|\
+-lpanel|-lform|-ltinfo|-lncurses|-lncursesw|-latomic|-lgcc_s|-lgcc)
+        ;;                                     # all inside libSystem on Darwin
+    # -lz used to be dropped here too ("inside libSystem" era, when every
+    # package built --without-zlib).  It is NOT: the device does ship
+    # libz.dylib, but a dropped -lz means neither the static libz.a nor an
+    # LC_LOAD_DYLIB ever reaches the link, and curl-8.16.0-3 shipped with
+    # undefined _zlibVersion because the tbd whitelist then masked the hole.
+    # zlib now forwards like any other -l (static libz.a via -L, or the
+    # device dylib if a build links without one).
+    -levent|-levent_core|-levent_extra)
+        # libevent static archive lives in the build prefix
+        LDARGS+=("-L${IOS_PREFIX:-/nonexistent}/lib" "$1") ;;
+    -l*) LDARGS+=("$1") ;;                     # ld64 resolves via the -L paths
+                                               # (e.g. -lssl -lcrypto with -L.)
+    # -framework 对（框架名独立参数）：case 内 shift 2 吃掉两个参数后必须
+    # continue 跳过循环尾的 shift，否则多吞一个（首个受害者是 CPython 的
+    # `-o python`——产物莫名变成 a.out，2026-11-15）
+    -framework) FRAMEWORKS+=("-framework" "$2"); shift 2; continue ;;
+    -isysroot*) [ "$1" = "-isysroot" ] && shift ;;   # 分立形式：flag 与路径是
+                                                     # 两个参数，路径不能漏进
+                                                     # CFLAGS（ffmpeg darwin 分
+                                                     # 支踩出，2026-11-15）
+    -I*|-isystem*) CFLAGS+=("$1") ;;
+    -target*|-arch*) ;;
+    -platform_version*|-mlinker-version*) ;;
+    *) CFLAGS+=("$1") ;;
+  esac
+  shift
+done
+
+if [ -z "$OUTPUT" ] || [ "$OUTPUT" = a.out ]; then
+  if [ $mode_compile -eq 1 ] && [ ${#SRCS[@]} -eq 1 ]; then OUTPUT="${SRCS[0]%.*}.o"
+  elif [ ${#SRCS[@]} -eq 1 ]; then OUTPUT="${SRCS[0]%.*}"
+  else OUTPUT=a.out; fi
+fi
+
+
+
+if [ $mode_compile -eq 1 ]; then
+  if [ $HAS_OUTPUT -eq 1 ]; then
+    if [ -n "$SDE" ]; then
+      "$REAL_CLANG" "${TGT[@]}" "${EARGS[@]}" "${CFLAGS[@]}" "${SRCS[@]}" -o "$OUTPUT" && touch_sde "$OUTPUT"
+      exit $?
+    fi
+    exec "$REAL_CLANG" "${TGT[@]}" "${EARGS[@]}" "${CFLAGS[@]}" "${SRCS[@]}" -o "$OUTPUT"
+  else
+    exec "$REAL_CLANG" "${TGT[@]}" "${EARGS[@]}" "${CFLAGS[@]}" "${SRCS[@]}"
+  fi
+fi
+
+for src in "${SRCS[@]:-}"; do
+  [ -z "$src" ] && continue
+  obj="${src%.*}.o"
+  "$REAL_CLANG" "${TGT[@]}" "${CFLAGS[@]}" -c "$src" -o "$obj" || exit 1
+  OBJS+=("$obj")
+done
+
+EXTRA=()
+IFS=':' read -r -a _libs <<< "$DYLIBS"
+for l in "${_libs[@]:-}"; do [ -n "$l" ] && EXTRA+=("$l"); done
+# -framework pairs captured during parsing: resolve via the local tbd stub
+# dir; at runtime dyld loads the real framework from the shared cache.
+if [ "${#FRAMEWORKS[@]}" -gt 0 ]; then
+  EXTRA+=("-F$HOME/ios-tool/Frameworks" "${FRAMEWORKS[@]}")
+fi
+
+export LD_LIBRARY_PATH="${IOS_LD_LIBRARY_PATH:-}:${LD_LIBRARY_PATH:-}"
+# Compat stubs (tools/sysroot/overlay/usr/lib/libios-compat.a, built by
+# tools/sysroot/compat/build-ios-compat.sh): symbols that static libraries
+# drag in but iOS 10.3.3 does not provide (recvmmsg/sendmmsg from OpenSSL's
+# socket helpers, terminfo from mosh; 2026-11-25: the generic libatomic
+# helpers from atomic-compat.c -- 8-byte __atomic_* libcalls resolve to
+# broken device helpers, see the file header).  Appended LAST -- after the
+# caller's own archives -- because ld64 resolves archives positionally: a
+# member of libcrypto.a scanned late can reference recvmmsg, and only a
+# stub archive after it can satisfy that.  Stubs fail gracefully (ENOSYS /
+# curses ERR) instead of the alternative, which is dyld killing the process
+# at launch or on first use.  Unreferenced members are never pulled.
+# 2026-11-25: resolve the archive relative to THIS SCRIPT, not
+# "$SYSROOT/../.." -- that relative hop silently died when the repo moved
+# (SYSROOT=$HOME/ios-tool/... -> $HOME/tools/... does not exist), so the
+# compat archive had not been appended to any link since the move.
+COMPAT_ARCHIVE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/sysroot/overlay/usr/lib/libios-compat.a"
+COMPAT=()
+[ -f "$COMPAT_ARCHIVE" ] && COMPAT+=("$COMPAT_ARCHIVE")
+
+# A bundle/dylib has no entry point; asking ld64 for -e _main makes it
+# resolve _main from the flat namespace, so dlopen() fails with
+# "Symbol not found: _main".  Only executables get -e _main.
+ENTRY=(-e _main)
+if [ "$IS_BUNDLE" = 1 ]; then ENTRY=(); fi
+
+if [ -n "$SDE" ]; then
+  "$LD64" -arch armv7 -platform_version ios 10.3 10.3 \
+    -undefined dynamic_lookup -L"$STUBDIR" -lSystem \
+    "${ENTRY[@]}" -o "$OUTPUT" "${OBJS[@]}" "${EXTRA[@]}" "${LDARGS[@]}" "${COMPAT[@]}" \
+    && touch_sde "$OUTPUT"
+  exit $?
+fi
+exec "$LD64" -arch armv7 -platform_version ios 10.3 10.3 \
+  -undefined dynamic_lookup -L"$STUBDIR" -lSystem \
+  "${ENTRY[@]}" -o "$OUTPUT" "${OBJS[@]}" "${EXTRA[@]}" "${LDARGS[@]}" "${COMPAT[@]}"

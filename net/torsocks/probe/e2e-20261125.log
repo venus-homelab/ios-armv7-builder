@@ -1,0 +1,41 @@
+# torsocks real-library E2E -- on-device, 2026-11-25 (mobile, no deploy)
+#
+# Setup: out/libtorsocks-2.5.0-armv7 scp'd to /var/tmp/torsocks-e2e/,
+# signed with the on-device ldid; device python3 runs the canned SOCKS5
+# server (net/torsocks/probe/e2e-socks5-server.py, 127.0.0.1:9108) which
+# answers RESOLVE (tor extension, CMD 0xF0) with 93.184.216.34 and
+# CONNECT with one canned HTTP page; test conf sets TorPort 9108.
+# tor4 itself was NOT usable for this test: bootstrap stalls at 14%
+# (relays unreachable from this network; the obfs4proxy backlog condition).
+# The two flags below are exactly what the torsocks wrapper exports.
+#
+# Command:
+#   DYLD_INSERT_LIBRARIES=/var/tmp/torsocks-e2e/libtorsocks.dylib \
+#   DYLD_FORCE_FLAT_NAMESPACE=1 \
+#   TORSOCKS_CONF_FILE=/var/tmp/torsocks-e2e/torsocks-test.conf \
+#   /var/mobile/tools/curl -s --max-time 15 http://example.com/
+#
+# Output: torsocks-E2E-OK   (curl rc=0)
+#
+# Server-side protocol trace (stderr):
+E2E-SRV listening 9108
+E2E-REQ cmd=0xf0 atyp=3 target=example.com:42
+E2E-REQ cmd=0x01 atyp=3 target=93.184.216.34:80
+E2E-DATA b'GET / HTTP/1.1\r\nHost: example.com\r\nUser-Agent: curl/8.16.0\r\nAccept: */*\r\n\r\n'
+#
+# Read-out:
+#   - DYLD_INSERT_LIBRARIES alone loads the lib but does NOT interpose:
+#     without DYLD_FORCE_FLAT_NAMESPACE the first E2E attempt went straight
+#     to the real internet (probe matrix case (b) vs (d) -- same rule).
+#   - getaddrinfo("example.com") is hijacked into a SOCKS5 RESOLVE with
+#     ATYP=DOMAIN: the hostname never resolves on-device (remote DNS).
+#   - connect() is hijacked into a SOCKS5 CONNECT; the HTTP request then
+#     relays through the proxy end-to-end.
+#   - torsocks debug (TORSOCKS_LOG_LEVEL=5) confirms the conf file parse,
+#     the resolve path (tsocks_tor_resolve) and clean teardown.
+#
+# Negative control (no DYLD_INSERT): curl http://127.42.42.99/ -> rc=28
+# (timeout; the onion-cookie fake-IP route only exists under injection).
+#
+# Cleanup: tor4 (started for a direct-SOCKS baseline attempt) killed with
+# `pkill -x tor`; e2e servers killed by recorded PID; pgrep confirms gone.

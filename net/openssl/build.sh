@@ -1,0 +1,83 @@
+#!/bin/bash
+# Build OpenSSL (verified with 4.0.3) for armv7 iOS 10.x on Linux.
+#
+# Upstream status: the ios-cross/iphoneos-cross targets still exist in
+# OpenSSL 4.x (Configurations/15-ios.conf, asm_arch armv4), but upstream
+# never tests them.  Local adjustments, all documented in ../README.md:
+#
+#   * `-arch armv7` removed from the conf (Linux clang takes -target only)
+#   * CROSS_TOP/CROSS_SDK env point the legacy -isysroot at our sysroot
+#   * no-asm: the armv4 perlasm output uses ELF subtraction expressions
+#     against OPENSSL_armcap_P that Mach-O rejects
+#   * atomic_compat.c/.s: iOS 10 libSystem lacks __atomic_is_lock_free and
+#     the generic __atomic_load/store/compare_exchange runtime helpers
+#   * sysroot additions the build needs: TargetConditionals.h,
+#     libkern/OSByteOrder.h, h_errno in netdb.h, struct in6_pktinfo and
+#     the Darwin IPV6_PKTINFO(46)/RECVPKTINFO(61) values, and the whole
+#     Darwin pthread.h (musl's pthread_once_t is 4 bytes; Darwin needs
+#     12 with the 0x71B7236C signature - see the os_once crash in README)
+set -euo pipefail
+
+here="$(cd "$(dirname "$0")" && pwd)"
+root="$(cd "$here" && git rev-parse --show-toplevel)"
+OSSL_VERSION="${OSSL_VERSION:-4.0.3}"
+# Deterministic build: OpenSSL bakes the wall-clock build date into the
+# products unless SOURCE_DATE_EPOCH is set (byte-A/B finding 2026-11-24:
+# two independent fresh builds differed because each saw its own clock).
+# Same convention as every make-deb.sh: the HEAD commit time.
+export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$root" log -1 --format=%ct 2>/dev/null || echo 0)}"
+SRC="$root/tmp/src/openssl-$OSSL_VERSION"
+PREFIX="${PREFIX:-/var/mobile/openssl4}"    # isolated on purpose: never
+                                            # overwrite the device's files
+[ -f "$SRC/Configure" ] || {
+    read -r U SHA _ <<<"$("$root/tools/fetch-src.sh" --lock openssl)"
+    tarball="$("$root/tools/fetch-src.sh" openssl "$U" "$SHA")"
+    rm -rf "$SRC"
+    tar -C "$root/tmp/src" -xzf "$tarball"
+}
+[ -f "$SRC/Configure" ] || { echo "openssl source layout unexpected" >&2; exit 1; }
+
+export LD_LIBRARY_PATH="${LD64_LIBS:-$HOME/ios-tool/x-libdispatch/lib:$HOME/ios-tool/x-tapi/lib}:${LD_LIBRARY_PATH:-}"
+# SDK-mode contract (toolchain.md §1); the old musl sysroot remains the
+# explicit opt-in via IOS_SYSROOT for historical reproductions
+export IOS_SYSROOT="${IOS_SYSROOT:-$HOME/ios-tool/iPhoneOS10.3.sdk}"
+[ -d "$IOS_SYSROOT/usr/include" ] || { echo "missing $IOS_SYSROOT (bootstrap-toolchain.sh stage 3)" >&2; exit 1; }
+export IOS_LD64="${IOS_LD64:-${LD64:-$HOME/ios-tool/x-ld64/bin/x86_64-apple-darwin13.4.0-ld}}"
+export IOS_STUBDIR="${IOS_STUBDIR:-$HOME/ios-tool}"
+# 15-ios.conf assembles -isysroot $(CROSS_TOP)/SDKs/$(CROSS_SDK): present any
+# sysroot through that shape with a link.  The link lives under IOS_STUBDIR
+# (host-stable absolute), NOT under $root/tmp: OpenSSL bakes the assembled
+# -isysroot path into the cversion.o "compiler:" provenance string, and a
+# tree-relative path makes two independent builds differ byte-for-byte
+# (2026-11-25 byte-A/B root cause; the string also carries the CC path, so
+# CC/AR/RANLIB are exported as bare names resolved through PATH).
+mkdir -p "$IOS_STUBDIR/SDKs"
+ln -sfn "$IOS_SYSROOT" "$IOS_STUBDIR/SDKs/sdk"
+export CROSS_TOP="$IOS_STUBDIR" CROSS_SDK=sdk
+
+cd "$SRC"
+sed -i 's/-arch armv7 //' Configurations/15-ios.conf
+
+# atomic runtime: the device exports __atomic_load/store/fetch_add_8 (dlsym
+# OK) but NOT __atomic_is_lock_free (dlsym MISS) -- so one narrow object from
+# atomic_compat.c (spinlock, asm label) fills exactly that hole, and the
+# native helpers keep winning for everything else.
+export PATH="$root/tools:$PATH"
+export CC=cc-wrapper.sh
+export AR=darwin-ar
+export RANLIB=darwin-ranlib
+
+CCOBJ="$root/tmp/openssl-atomic-compat.o"
+"$root/tools/cc-wrapper.sh" -c "$here/atomic_compat.c" -o "$CCOBJ"
+
+./Configure ios-cross no-asm no-shared no-tests no-docs \
+    --prefix="$PREFIX" --openssldir="$PREFIX/etc/ssl" \
+    LDFLAGS="$CCOBJ" \
+    > /dev/null
+make -j"$(nproc)" > /dev/null
+
+ldid -S apps/openssl
+mkdir -p "$root/out"
+cp apps/openssl "$root/out/openssl-$OSSL_VERSION-armv7"
+echo "==> $root/out/openssl-$OSSL_VERSION-armv7"
+echo "    install: scp it to $PREFIX/openssl on the device and ldid -S"

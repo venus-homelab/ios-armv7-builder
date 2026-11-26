@@ -1,0 +1,18 @@
+--- a/traceroute.tproj/traceroute.c
++++ b/traceroute.tproj/traceroute.c
+@@ -290,6 +290,15 @@
+ #include "as.h"
+ #include "traceroute.h"
+ 
++/* ios-armv7-builder port (2026-11-20): iOS 10.3 SDK ships the PUBLIC cut of
++ * <sys/socket.h>; the SO_RECV_ANYIF block (xnu-3789.70.16 bsd/sys/socket.h:318,
++ * value 0x1104, in the '#ifdef PRIVATE' tail) is stripped.  Apple builds
++ * traceroute against System.framework/PrivateHeaders where it is present.
++ * setsockopt() failure here is non-fatal (return value unused upstream). */
++#ifndef SO_RECV_ANYIF
++#define SO_RECV_ANYIF	0x1104		/* unrestricted inbound processing */
++#endif
++
+ /* Maximum number of gateways (include room for one noop) */
+ #define NGATEWAYS ((int)((MAX_IPOPTLEN - IPOPT_MINOFF - 1) / sizeof(u_int32_t)))
+ 

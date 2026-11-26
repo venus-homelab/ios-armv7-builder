@@ -1,0 +1,87 @@
+# obfs4proxy loopback E2E -- on-device, 2026-11-25 (mobile, no deploy)
+#
+# Full loop under test (obfs4 proxy is deployed as the tor4 client-side
+# pluggable transport; the device only ever runs the CLIENT role):
+#
+#   [device] pt-driver (probe/pt-driver.go, armv7)
+#     -> [device] obfs4proxy 0.0.14 client   (pt env/stdio spawn; the deb
+#        binary, scp'd unsigned + on-device ldid -S into /var/tmp, NOT a
+#        deb deploy -- deploy stays with the main agent)
+#     -> [obfs4 stream, WAN-shaped TCP]
+#     -> [host] obfs4proxy 0.0.14 server     (SAME pristine tag tree,
+#        GOOS=linux GOARCH=amd64 via probe/build.sh)
+#     -> TOR_PT_ORPORT -> canary HTTP server (probe/canary-server.py)
+#
+# pt protocol in play (read from goptlib v1.0.0 + obfs4proxy's own pt
+# plumbing in source, not from memory):
+#   client spawn env: TOR_PT_MANAGED_TRANSPORT_VER=1,
+#     TOR_PT_STATE_LOCATION=/var/tmp/obfs4-e2e/state,
+#     TOR_PT_CLIENT_TRANSPORTS=obfs4, TOR_PT_EXIT_ON_STDIN_CLOSE=1
+#   client stdout: "VERSION 1", "CMETHOD obfs4 socks5 127.0.0.1:61385",
+#     "CMETHODS DONE"
+#   server spawn env: TOR_PT_SERVER_TRANSPORTS=obfs4,
+#     TOR_PT_SERVER_BINDADDR=obfs4-0.0.0.0:32684,
+#     TOR_PT_ORPORT=127.0.0.1:<canary>
+#   server stdout: "VERSION 1", "SMETHOD obfs4 [::]:32684
+#     ARGS:cert=<70-char unpadded base64>,iat-mode=0", "SMETHODS DONE"
+#   cert assembled from the server statefile obfs4_state.json:
+#     base64(node-id(20B) || public-key(32B)) with "==" stripped
+#     (transports/obfs4/statefile.go obfs4ServerCert.String()).
+#
+# RFC1929 wire detail that cost one debug cycle: obfs4proxy CONCATENATES
+# the SOCKS username and password into one args string and parses it
+# with common/socks5/args.go parseClientParameters (key=value pairs split
+# on ';').  First attempt put "cert=<cert>" in uname and "iat-mode=0" in
+# passwd with no ';' -> the pair merged into cert="<cert>iat-mode=0" and
+# base64 decoding failed at input byte 73.  The ';' between the halves
+# lives at the START of the password field (that is how tor packs bridge
+# args too).  Second wall in the same debug cycle: the SOCKS CONNECT
+# target is the BRIDGE address (what tor sends for a `Bridge obfs4
+# <ip>:<port> ...` line), NOT the final destination -- the canary sits
+# behind TOR_PT_ORPORT and never appears in the SOCKS target.
+#
+# Command (device side, mobile user):
+#   /var/tmp/obfs4-e2e/pt-driver-armv7 \
+#     -obfs4proxy /var/tmp/obfs4-e2e/obfs4proxy \
+#     -cert BBEk0ZZwFwkS5FEIYWwXrFsTRzr9jJhHSau+Up1X2eKCAWXw0ZoyR240k8HnQt+BADGDUg \
+#     -iat 0 -target <host>:32684 -statedir /var/tmp/obfs4-e2e/state
+#   (E2E orchestration: net/obfs4proxy/probe/e2e-run.sh --device)
+#
+# Output (device, PT-DRIVER lines):
+#   PT-DRIVER ptline: VERSION 1
+#   PT-DRIVER ptline: CMETHOD obfs4 socks5 127.0.0.1:61385
+#   PT-DRIVER ptline: CMETHODS DONE
+#   PT-DRIVER step: SOCKS5 RFC1929 accepted: cert=BBEk0ZZwFwkS... iat-mode=0 (75+11 bytes)
+#   PT-DRIVER step: SOCKS5 CONNECT rep=0 (target <host>:32684 through obfs4 tunnel)
+#   PT-DRIVER http-reply: 103 bytes, head "HTTP/1.1 200 OK ... obfs4proxy-E2E-OK"
+#   PT-DRIVER PASS: full loop ok (spawn -> CMETHOD -> SOCKS5/cert -> obfs4 -> canary)
+#
+# Host server protocol trace (obfs4proxy.log, DEBUG):
+#   [INFO]: obfs4 - registered listener: [::]:32684
+#   [INFO]: obfs4(<device>:61387) - new connection      <- obfs4 handshake OK
+#   [INFO]: obfs4(<device>:61387) - closed connection   <- clean relay
+# Canary trace (stderr):
+#   CANARY-REQ from 127.0.0.1: b'GET / HTTP/1.0\r\nHost: <host>:32684\r\nUser-Agent: pt-driver/1\r\n\r\n'
+#
+# Read-out:
+#   - the pt env/stdio manager protocol works end to end on iOS 10.3.3
+#     armv7: obfs4proxy accepted the managed-client env set, published
+#     its SOCKS listener through CMETHOD and exited cleanly on
+#     TOR_PT_EXIT_ON_STDIN_CLOSE=1 (stdin close -> NOTICE + terminate).
+#   - the full obfs4 crypto surface is proven live on the device:
+#     NTOR handshake (client cert unpack -> server), packet framing and
+#     the replay filter all pass in BOTH directions (one HTTP
+#     round-trip through the tunnel, canned body byte-verified).
+#   - the SERVER role also proven (on the host, same tag tree): the
+#     device only ever runs the client role in the field, so the
+#     server half does not need an on-device build to close the loop.
+#   - iat-mode=0 exercised (the iat=1/2 code paths are compile-time
+#     siblings of the same transport; not separately timed).
+#
+# Negative control (host-only first run, kept for the record): with the
+# ';' missing in the RFC1929 args the client replied rep=1 and the
+# client-side log showed "invalid arguments: failed to decode cert" --
+# the SOCKS layer rejects bad bridge args instead of dialing blind.
+#
+# Cleanup: device /var/tmp/obfs4-e2e removed (verified absent); host
+# canary + server killed by recorded PID; no pkill patterns used.

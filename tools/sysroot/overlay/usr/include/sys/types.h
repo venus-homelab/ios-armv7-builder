@@ -1,0 +1,128 @@
+#ifndef _SYS_TYPES_H
+#define _SYS_TYPES_H
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#include <features.h>
+
+#define __NEED_ino_t
+#define __NEED_dev_t
+#define __NEED_uid_t
+#define __NEED_gid_t
+#define __NEED_mode_t
+#define __NEED_nlink_t
+#define __NEED_off_t
+#define __NEED_pid_t
+#define __NEED_size_t
+#define __NEED_ssize_t
+#define __NEED_time_t
+#define __NEED_timer_t
+#define __NEED_clockid_t
+
+#define __NEED_blkcnt_t
+#define __NEED_fsblkcnt_t
+#define __NEED_fsfilcnt_t
+
+#define __NEED_id_t
+#define __NEED_clock_t
+#define __NEED_suseconds_t
+#define __NEED_blksize_t
+
+#define __NEED_useconds_t
+
+#if defined(_GNU_SOURCE) || defined(_BSD_SOURCE)
+#define __NEED_int8_t
+#define __NEED_int16_t
+#define __NEED_int32_t
+#define __NEED_int64_t
+#define __NEED_u_int64_t
+#define __NEED_register_t
+#endif
+
+#include <bits/alltypes.h>
+
+#if defined(_GNU_SOURCE) || defined(_BSD_SOURCE)
+typedef unsigned char u_int8_t;
+typedef unsigned short u_int16_t;
+typedef unsigned u_int32_t;
+typedef char *caddr_t;
+typedef unsigned char u_char;
+typedef unsigned short u_short, ushort;
+typedef unsigned u_int, uint;
+typedef unsigned long u_long, ulong;
+typedef long long quad_t;
+typedef unsigned long long u_quad_t;
+#include <endian.h>
+#include <sys/select.h>
+#endif
+
+/* Network types */
+typedef unsigned short in_port_t;
+typedef unsigned int in_addr_t;
+
+#if defined(_LARGEFILE64_SOURCE)
+#define blkcnt64_t blkcnt_t
+#define fsblkcnt64_t fsblkcnt_t
+#define fsfilcnt64_t fsfilcnt_t
+#define ino64_t ino_t
+#define off64_t off_t
+#endif
+
+/*
+ * Darwin major/minor/makedev (xnu bsd/sys/types.h).  Darwin dev_t is
+ * 32 bits with the major in the top byte -- this is the layout the
+ * kernel uses in KERN_PROC and proc_info device fields, and it differs
+ * from musl's 64-bit encoding.  musl's own macros live in
+ * sys/sysmacros.h and stay untouched.
+ */
+#ifndef major
+#define major(x)	((int32_t)(((u_int32_t)(x) >> 24) & 0xff))
+#endif
+#ifndef minor
+#define minor(x)	((int32_t)((x) & 0xffffff))
+#endif
+#ifndef makedev
+#define makedev(x,y)	((dev_t)(((x) << 24) | (y)))
+#endif
+
+#ifdef __cplusplus
+}
+#endif
+
+/*
+ * Darwin integer aliases.  Apple's <sys/_types.h> defines the __uintN_t /
+ * __intN_t family and the <sys/ioccom.h> ioctl macros are written in terms
+ * of them; the sysroot has no _types.h (it is a kernel-internal header
+ * pulling a tree of <sys/_types/*.h>), so the aliases live here, where
+ * Darwin also re-exports them.
+ */
+#ifndef __uint8_t
+typedef unsigned char		__uint8_t;
+typedef unsigned short		__uint16_t;
+typedef unsigned int		__uint32_t;
+typedef unsigned long long	__uint64_t;
+typedef signed char		__int8_t;
+typedef short			__int16_t;
+typedef int			__int32_t;
+typedef long long		__int64_t;
+#endif
+
+
+/*
+ * uuid_t.  Darwin defines it as a bare 16-byte array (not a struct), in
+ * <uuid/uuid.h> and re-exported through <sys/types.h>-adjacent headers.
+ * sqlite's unixFile code takes uuid_t parameters without including
+ * <uuid/uuid.h> (the SDK supplies it transitively), so the typedef is
+ * repeated here.
+ *
+ * Verified on device (2026-11-08): sizeof(uuid_t) == 16 and
+ * gethostuuid() filled one with a real identifier
+ * (9a799b54e60c51bc919fb221c1411e62).
+ */
+#ifndef UUID_T_DEFINED
+#define UUID_T_DEFINED
+typedef unsigned char uuid_t[16];
+#endif
+
+#endif

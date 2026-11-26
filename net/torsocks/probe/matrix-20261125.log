@@ -1,0 +1,46 @@
+# torsocks feasibility probe -- on-device matrix, 2026-11-25
+# Runner: net/torsocks/probe/devtest.sh (scp'd to /var/tmp/torsocks-probe on
+# <device>, run as mobile).  Probe built by net/torsocks/probe/build.sh:
+# minimal armv7 dylib (constructor + exported connect() via
+# dlsym(RTLD_NEXT)) + minimal two-level-namespace armv7 host calling
+# socket()/connect() to 127.0.0.1:1.  Signing states are produced ON DEVICE
+# with the on-device ldid (host ldid signatures are untrusted on this
+# target).  Raw transcript follows, verbatim.
+
+### ldid -e proof (signature exists on-device)
+### (0) baseline: ad-hoc-signed host alone, no injection
+[probe-host] main running
+[probe-host] socket=3 connect rc=-1
+rc=0
+### (a) UNSIGNED host + UNSIGNED lib + DYLD_INSERT
+/var/tmp/torsocks-probe/devtest.sh: line 26: 89023 Killed: 9               DYLD_INSERT_LIBRARIES="$D/libprobe.dylib" ./probe-host
+rc=137
+### (b) ad-hoc-signed host + signed lib + DYLD_INSERT
+[probe-lib] constructor: dylib IS loaded
+[probe-host] main running
+[probe-host] socket=3 connect rc=-1
+rc=0
+### (c) entitlements-signed host (get-task-allow) + signed lib
+[probe-lib] constructor: dylib IS loaded
+[probe-host] main running
+[probe-host] socket=3 connect rc=-1
+rc=0
+### (c2) signed host + ENTITLEMENTS-signed lib
+[probe-lib] constructor: dylib IS loaded
+[probe-host] main running
+[probe-host] socket=3 connect rc=-1
+rc=0
+### (d) signed host + signed lib + DYLD_INSERT + DYLD_FORCE_FLAT_NAMESPACE=1
+###     (= torsocks wrapper's own Darwin mechanism)
+[probe-lib] constructor: dylib IS loaded
+[probe-host] main running
+[probe-lib] connect() INTERPOSED by inserted dylib
+[probe-host] socket=3 connect rc=-1
+rc=0
+### (e) known-good cross-check: insert the device's libproxychains4.dylib
+[proxychains] DLL init: proxychains-ng 4.18
+[probe-host] main running
+[probe-host] socket=7 connect rc=-1
+rc=0
+### device sh -> bash? (wrapper OSTYPE check needs it)
+lrwxr-xr-x 1 root wheel 4 Jan  8  2016 /bin/sh -> bash

@@ -1,0 +1,20 @@
+--- a/arp.tproj/arp.c
++++ b/arp.tproj/arp.c
+@@ -96,8 +96,16 @@
+ #include <err.h>
+ #include <errno.h>
+ #include <netdb.h>
+-#include <nlist.h>
++/* <nlist.h>: included but never used upstream; iOS SDK lacks it — 2026-11-20 */
+ #include <paths.h>
++/* xnu-3789 bsd/sys/socket.h private NET_RT nodes (kernel header values);
++ * the iOS 10.3 SDK's public socket.h stops at NET_RT_DUMP2. */
++#ifndef NET_RT_DUMPX
++#define	NET_RT_DUMPX		8	/* private */
++#endif
++#ifndef NET_RT_DUMPX_FLAGS
++#define	NET_RT_DUMPX_FLAGS	9	/* private */
++#endif
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>

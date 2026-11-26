@@ -1,0 +1,144 @@
+name: build (reusable)
+# Reusable per-package build workflow.  Callers:
+#   * full-build.yaml      -- strategy: matrix over the package list
+#   * single-build.yaml    -- workflow_dispatch with a package name
+#
+# Self-contained: every job bootstraps the toolchain into /opt/ios-tool
+# (idempotent, ~6 min on a fresh runner).  A shared-toolchain artifact would
+# save that but couples the workflows; simple-correct first.
+#
+# The build recipe is the repo's own convention:
+#   <pkg>/build.sh     -> out/<artifact>-armv7       (must pass check-undefined)
+#   <pkg>/make-deb.sh  -> out/<pkg>_<ver>_iphoneos-arm.deb  (when present)
+#
+# Inputs:
+#   package  -- the repo directory name (whois, rsync, curl, ...)
+on:
+  workflow_call:
+    inputs:
+      package:
+        description: Package (repo directory) to build
+        required: true
+        type: string
+
+jobs:
+  build-one:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      IOS_SYSROOT: /opt/ios-tool/iPhoneOS10.3.sdk
+      IOS_LD64: /opt/ios-tool/x-ld64/bin/x86_64-apple-darwin13.4.0-ld
+      IOS_STUBDIR: /opt/ios-tool
+      LD_LIBRARY_PATH: /opt/ios-tool/x-libdispatch/lib:/opt/ios-tool/x-tapi/lib
+      PATH: /opt/ios-tool/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    steps:
+      - uses: actions/checkout@v4
+      # The toolchain cache: every job is a fresh runner and reusable
+      # workflows cannot receive steps/env from callers, so /opt/ios-tool
+      # (~137 MB) is cached per-runner instead of rebuilt (~6 min) each time.
+      # Key parts: the bootstrap recipe (hashFiles) + the upstream SDK commit
+      # (the mirror is master-branch -- when it moves, the cached SDK is
+      # stale and must rebuild).  Host apt deps (clang/llvm) are NOT cached
+      # -- stage 0 always runs, it is seconds.
+      - name: resolve upstream SDK commit (cache key part)
+        id: sdkcommit
+        run: echo "commit=$(git ls-remote https://github.com/xybp888/iOS-SDKs HEAD | cut -c1-12)" >> "$GITHUB_OUTPUT"
+      - name: cache the cross toolchain
+        id: toolchain
+        uses: actions/cache@v4
+        with:
+          path: /opt/ios-tool
+          key: ios-toolchain-${{ steps.sdkcommit.outputs.commit }}-${{ hashFiles('tools/bootstrap-toolchain.sh') }}
+      - name: install host build deps (apt, never cached)
+        run: tools/bootstrap-toolchain.sh --stage=0 --prefix=/opt/ios-tool
+      - name: bootstrap the cross toolchain (cache miss only)
+        if: steps.toolchain.outputs.cache-hit != 'true'
+        run: tools/bootstrap-toolchain.sh --prefix=/opt/ios-tool
+      - name: smoke -- hello.c to armv7 Mach-O, ad-hoc signed
+        # --force: also re-validates a RESTORED cache (stage 5 rebuilds the
+        # hello-world probe; catches a corrupted or stale cache).
+        run: tools/bootstrap-toolchain.sh --stage=5 --prefix=/opt/ios-tool --force
+      - name: sysroot manifest -- committed trees + SDK sentinels
+        # two drift classes, one check: hand edits to the committed sysroot
+        # trees, and the toolchain cache's SDK aging behind the mirror
+        # (uuid/uuid.h died exactly this way on 2026-11-23)
+        run: IOS_SYSROOT_SDK=/opt/ios-tool/iPhoneOS10.3.sdk tools/sysroot-manifest.sh --verify
+
+      - id: pkg
+        name: derive the artifact id (GHA forbids / in artifact names)
+        run: echo "id=$(echo "${{ inputs.package }}" | tr '/' '-')" >> "$GITHUB_OUTPUT"
+
+      - name: build ${{ inputs.package }}
+        run: |
+          set -euo pipefail
+          # SOURCE_DATE_EPOCH = the HEAD commit time: tools that honor it
+          # (dpkg-deb's tar/gzip clamping, __DATE__/__TIME__ users) become
+          # a function of the source tree, not the wall clock
+          export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          mkdir -p tmp/src   # git checkout carries no tmp/ (gitignored)
+          if [ ! -f "${{ inputs.package }}/build.sh" ]; then
+            echo "unknown package: ${{ inputs.package }} (no build.sh)" >&2
+            exit 2
+          fi
+          # sources.lock coverage: every fetch-src key must resolve to a
+          # lock row before the build runs (a used-but-unlocked key would
+          # download unverified bytes on a clean checkout)
+          bash tools/lock-coverage.sh --quiet
+          (cd "${{ inputs.package }}" && bash ./build.sh)
+
+      - name: gate -- check-undefined
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          bins=(out/*-armv7)
+          # library-product packages (libpcap) produce .a archives: audit
+          # their members instead of an executable's symbols
+          archives=(out/*.a)
+          if [ ${#bins[@]} -eq 0 ] && [ ${#archives[@]} -eq 0 ]; then
+            # data packages (ca-certificates) legitimately produce no
+            # binaries; they declare it with a .data-package marker
+            [ -f "${{ inputs.package }}/.data-package" ] || {
+              echo "no *-armv7 products in out/"; exit 1; }
+            echo "data package: no *-armv7 products, symbol gate skipped"
+          fi
+          # audit EVERY product, not just one: dropbear shipped three binaries
+          # that only the audit-and-publish collector ever checked, so a bad
+          # symbol (memset_s) hid there for months.
+          for b in "${bins[@]}"; do tools/check-undefined.sh "$b"; done
+          for a in "${archives[@]}"; do
+            n=$(tools/llvm-nm "$a" 2>/dev/null | wc -l) || n=0
+            [ "$n" -gt 0 ] || { echo "archive $a has no readable symbols"; exit 1; }
+            echo "OK archive $a: $n symbols"
+          done
+
+      - name: package -- make-deb.sh (when the package ships one)
+        run: |
+          set -euo pipefail
+          # dpkg-deb >= 1.18.11 clamps the payload tar mtimes and the gzip
+          # header to SOURCE_DATE_EPOCH -> the deb container is a function
+          # of the source tree (payload-byte reproducibility is per-package
+          # work and is tracked separately)
+          export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          if [ -f "${{ inputs.package }}/make-deb.sh" ]; then
+            (cd "${{ inputs.package }}" && bash ./make-deb.sh)
+          else
+            echo "${{ inputs.package }} has no make-deb.sh (data package or build-tree artifact)"
+          fi
+          # the payload signature gate: every Mach-O inside every freshly
+          # built deb must carry a valid ldid signature (the unsigned
+          # binary dies at dyld with no crash report -- review round 3)
+          shopt -s nullglob
+          debs=(out/*.deb)
+          # if-form: under set -e a bare `[ ... ] && cmd` with no debs would
+          # exit the step rc 1 (library-contract packages ship no deb)
+          if [ ${#debs[@]} -gt 0 ]; then bash tools/sign-audit.sh "${debs[@]}"; fi
+
+      - name: upload build products
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.pkg.outputs.id }}-out
+          path: |
+            out/*.deb
+            out/*-armv7
+            out/*.a
+          if-no-files-found: warn

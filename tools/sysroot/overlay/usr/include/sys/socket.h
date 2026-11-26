@@ -1,0 +1,592 @@
+#ifndef	_SYS_SOCKET_H
+#define	_SYS_SOCKET_H
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#include <features.h>
+
+#define __NEED_socklen_t
+#define __NEED_sa_family_t
+#define __NEED_size_t
+#define __NEED_ssize_t
+#define __NEED_uid_t
+#define __NEED_pid_t
+#define __NEED_gid_t
+#define __NEED_struct_iovec
+
+#include <bits/alltypes.h>
+
+#include <bits/socket.h>
+
+struct msghdr {
+	void *msg_name;
+	socklen_t msg_namelen;
+	struct iovec *msg_iov;
+#if __LONG_MAX > 0x7fffffff && __BYTE_ORDER == __BIG_ENDIAN
+	int __pad1;
+#endif
+	int msg_iovlen;
+#if __LONG_MAX > 0x7fffffff && __BYTE_ORDER == __LITTLE_ENDIAN
+	int __pad1;
+#endif
+	void *msg_control;
+#if __LONG_MAX > 0x7fffffff && __BYTE_ORDER == __BIG_ENDIAN
+	int __pad2;
+#endif
+	socklen_t msg_controllen;
+#if __LONG_MAX > 0x7fffffff && __BYTE_ORDER == __LITTLE_ENDIAN
+	int __pad2;
+#endif
+	int msg_flags;
+};
+
+struct cmsghdr {
+#if __LONG_MAX > 0x7fffffff && __BYTE_ORDER == __BIG_ENDIAN
+	int __pad1;
+#endif
+	socklen_t cmsg_len;
+#if __LONG_MAX > 0x7fffffff && __BYTE_ORDER == __LITTLE_ENDIAN
+	int __pad1;
+#endif
+	int cmsg_level;
+	int cmsg_type;
+};
+
+#ifdef _GNU_SOURCE
+struct ucred {
+	pid_t pid;
+	uid_t uid;
+	gid_t gid;
+};
+
+/*
+ * mmsghdr on Darwin is the *X variant, and it differs from Linux's in two
+ * ways that matter:
+ *
+ *   - msg_len is size_t (Linux: unsigned int)
+ *   - the calls are sendmsg_x()/recvmsg_x() with a count in the middle
+ *     (Linux: sendmmsg/recvmmsg with flags then a timeout)
+ *
+ * The Linux spelling was here first and broke libuv, whose
+ * darwin-syscalls.h defines its own struct mmsghdr and calls recvmsg_x:
+ * the build failed with "redefinition of 'mmsghdr'".  Both the width and
+ * the function names must match Darwin, so this is a correction, not an
+ * addition.
+ */
+struct mmsghdr {
+	struct msghdr msg_hdr;
+	size_t        msg_len;
+};
+
+ssize_t sendmsg_x(int, const struct mmsghdr *, u_int, int);
+ssize_t recvmsg_x(int, struct mmsghdr *, u_int, int);
+
+/* libuv ships its own copy of these declarations in darwin-syscalls.h;
+ * these markers keep a single definition in scope when both are included. */
+#define UV_SYS_SOCKET_HAS_MMSGHDR 1
+#define UV_SYS_SOCKET_HAS_XMSG 1
+#endif
+
+struct linger {
+	int l_onoff;
+	int l_linger;
+};
+
+#define SHUT_RD 0
+#define SHUT_WR 1
+#define SHUT_RDWR 2
+
+#ifndef SOCK_STREAM
+#define SOCK_STREAM    1
+#define SOCK_DGRAM     2
+#endif
+
+#define SOCK_RAW       3
+#define SOCK_RDM       4
+#define SOCK_SEQPACKET 5
+#define SOCK_DCCP      6
+#define SOCK_PACKET    10
+
+#ifndef SOCK_CLOEXEC
+#define SOCK_CLOEXEC   02000000
+#define SOCK_NONBLOCK  04000
+#endif
+
+/* Darwin: longest possible sockaddr length (xnu bsd/sys/socket.h); the
+ * proc_info socket structures embed char arrays of this size. */
+#define SOCK_MAXADDRLEN 255
+
+/*
+ * Darwin protocol/address families, numbering verbatim from xnu
+ * bsd/sys/socket.h.  This table deliberately does not carry musl's Linux
+ * family list: on Darwin the numbers differ (PF_INET6 is 30, not 10;
+ * AF_APPLETALK is 16, not 5) and the Linux-only families do not exist at
+ * all.  Defining them with Linux numbers made lsof's family switch compile
+ * two macros to one case value and would make socket() open the wrong
+ * family in an exotic domain.  Everything Darwin actually has is listed;
+ * the Linux-only names are left undefined so #ifdef-guarded code compiles
+ * them out, exactly as it does on macOS.
+ */
+
+#define PF_UNSPEC       0
+#define PF_LOCAL        1
+#define PF_UNIX         PF_LOCAL
+#define PF_FILE         PF_LOCAL
+#define PF_INET         2
+#define PF_IMPLINK      3
+#define PF_PUP          4
+#define PF_CHAOS        5
+#define PF_NS           6
+#define PF_ISO          7
+#define PF_OSI          PF_ISO
+#define PF_ECMA         8
+#define PF_DATAKIT      9
+#define PF_CCITT        10
+#define PF_SNA          11
+#define PF_DECnet       12
+#define PF_DLI          13
+#define PF_LAT          14
+#define PF_HYLINK       15
+#define PF_APPLETALK    16
+#define PF_ROUTE        17
+#define PF_LINK         18
+#define PF_XTP          pseudo_AF_XTP
+#define PF_COIP         20
+#define PF_CNT          21
+#define PF_SIP          24
+#define PF_IPX          23
+#define PF_RTIP         pseudo_AF_RTIP
+#define PF_PIP          pseudo_AF_PIP
+#define PF_NDRV         27
+#define PF_ISDN         28
+#define PF_KEY          pseudo_AF_KEY
+#define PF_INET6        30
+#define PF_NATM         31
+#define PF_SYSTEM       32
+#define PF_NETBIOS      33
+#define PF_PPP          34
+#define PF_HDRCMPLT     pseudo_AF_HDRCMPLT
+#define PF_AFP          36
+#define PF_RESERVED_36  36
+#define PF_IEEE80211    37
+#define PF_UTUN         38
+#define PF_MULTIPATH    39
+#define PF_MAX          40
+
+#define AF_UNSPEC       PF_UNSPEC
+#define AF_LOCAL        PF_LOCAL
+#define AF_UNIX         AF_LOCAL
+#define AF_FILE         AF_LOCAL
+#define AF_INET         PF_INET
+#define AF_IMPLINK      PF_IMPLINK
+#define AF_PUP          PF_PUP
+#define AF_CHAOS        PF_CHAOS
+#define AF_NS           PF_NS
+#define AF_ISO          PF_ISO
+#define AF_OSI          AF_ISO
+#define AF_ECMA         PF_ECMA
+#define AF_DATAKIT      PF_DATAKIT
+#define AF_CCITT        PF_CCITT
+#define AF_SNA          PF_SNA
+#define AF_DECnet       PF_DECnet
+#define AF_DLI          PF_DLI
+#define AF_LAT          PF_LAT
+#define AF_HYLINK       PF_HYLINK
+#define AF_APPLETALK    PF_APPLETALK
+#define AF_ROUTE        PF_ROUTE
+#define AF_LINK         PF_LINK
+#define pseudo_AF_XTP   19
+#define AF_COIP         PF_COIP
+#define AF_CNT          PF_CNT
+#define pseudo_AF_RTIP  22
+#define AF_SIP          PF_SIP
+#define pseudo_AF_PIP   25
+#define AF_NDRV         PF_NDRV
+#define AF_ISDN         PF_ISDN
+#define AF_E164         AF_ISDN
+#define pseudo_AF_KEY   29
+#define AF_INET6        PF_INET6
+#define AF_NATM         PF_NATM
+#define AF_SYSTEM       PF_SYSTEM
+#define AF_SYS_KERNCONTROL 4
+#define AF_NETBIOS      PF_NETBIOS
+#define AF_PPP          34
+#define AF_MAX          PF_MAX
+#ifndef SO_DEBUG
+#define SO_DEBUG        1
+#define SO_REUSEADDR    2
+#define SO_TYPE         3
+#define SO_ERROR        4
+#define SO_DONTROUTE    5
+#define SO_BROADCAST    6
+#define SO_SNDBUF       7
+#define SO_RCVBUF       8
+#define SO_KEEPALIVE    9
+#define SO_OOBINLINE    10
+#define SO_NO_CHECK     11
+#define SO_PRIORITY     12
+#define SO_LINGER       13
+#define SO_BSDCOMPAT    14
+#define SO_REUSEPORT    15
+#define SO_PASSCRED     16
+#define SO_PEERCRED     17
+#define SO_RCVLOWAT     18
+#define SO_SNDLOWAT     19
+#define SO_ACCEPTCONN   30
+#define SO_PEERSEC      31
+#define SO_SNDBUFFORCE  32
+#define SO_RCVBUFFORCE  33
+#define SO_PROTOCOL     38
+#define SO_DOMAIN       39
+#endif
+
+#ifndef SO_RCVTIMEO
+#if __LONG_MAX == 0x7fffffff
+#define SO_RCVTIMEO     66
+#define SO_SNDTIMEO     67
+#else
+#define SO_RCVTIMEO     20
+#define SO_SNDTIMEO     21
+#endif
+#endif
+
+#ifndef SO_TIMESTAMP
+#if __LONG_MAX == 0x7fffffff
+#define SO_TIMESTAMP    63
+#define SO_TIMESTAMPNS  64
+#define SO_TIMESTAMPING 65
+#else
+#define SO_TIMESTAMP    29
+#define SO_TIMESTAMPNS  35
+#define SO_TIMESTAMPING 37
+#endif
+#endif
+
+#define SO_SECURITY_AUTHENTICATION              22
+#define SO_SECURITY_ENCRYPTION_TRANSPORT        23
+#define SO_SECURITY_ENCRYPTION_NETWORK          24
+
+/* SO_BINDTODEVICE removed: it is a Linux-only sockopt (the iOS kernel
+ * answers EAFNOSUPPORT, and nbase/nsock log a scary "bind failed" for
+ * every scan).  Source-interface selection on Darwin uses IP_BOUND_IF. */
+
+#define SO_ATTACH_FILTER        26
+#define SO_DETACH_FILTER        27
+#define SO_GET_FILTER           SO_ATTACH_FILTER
+
+#define SO_PEERNAME             28
+#define SCM_TIMESTAMP           SO_TIMESTAMP
+#define SO_PASSSEC              34
+#define SCM_TIMESTAMPNS         SO_TIMESTAMPNS
+#define SO_MARK                 36
+#define SCM_TIMESTAMPING        SO_TIMESTAMPING
+#define SO_RXQ_OVFL             40
+#define SO_WIFI_STATUS          41
+#define SCM_WIFI_STATUS         SO_WIFI_STATUS
+#define SO_PEEK_OFF             42
+#define SO_NOFCS                43
+#define SO_LOCK_FILTER          44
+#define SO_SELECT_ERR_QUEUE     45
+#define SO_BUSY_POLL            46
+#define SO_MAX_PACING_RATE      47
+#define SO_BPF_EXTENSIONS       48
+#define SO_INCOMING_CPU         49
+#define SO_ATTACH_BPF           50
+#define SO_DETACH_BPF           SO_DETACH_FILTER
+#define SO_ATTACH_REUSEPORT_CBPF 51
+#define SO_ATTACH_REUSEPORT_EBPF 52
+#define SO_CNX_ADVICE           53
+#define SCM_TIMESTAMPING_OPT_STATS 54
+#define SO_MEMINFO              55
+#define SO_INCOMING_NAPI_ID     56
+#define SO_COOKIE               57
+#define SCM_TIMESTAMPING_PKTINFO 58
+#define SO_PEERGROUPS           59
+#define SO_ZEROCOPY             60
+#define SO_TXTIME               61
+#define SCM_TXTIME              SO_TXTIME
+#define SO_BINDTOIFINDEX        62
+#define SO_DETACH_REUSEPORT_BPF 68
+#define SO_PREFER_BUSY_POLL     69
+#define SO_BUSY_POLL_BUDGET     70
+
+#ifndef SOL_SOCKET
+#define SOL_SOCKET      1
+#endif
+
+#define SOL_IP          0
+#define SOL_IPV6        41
+#define SOL_ICMPV6      58
+
+#define SOL_RAW         255
+#define SOL_DECNET      261
+#define SOL_X25         262
+#define SOL_PACKET      263
+#define SOL_ATM         264
+#define SOL_AAL         265
+#define SOL_IRDA        266
+#define SOL_NETBEUI     267
+#define SOL_LLC         268
+#define SOL_DCCP        269
+#define SOL_NETLINK     270
+#define SOL_TIPC        271
+#define SOL_RXRPC       272
+#define SOL_PPPOL2TP    273
+#define SOL_BLUETOOTH   274
+#define SOL_PNPIPE      275
+#define SOL_RDS         276
+#define SOL_IUCV        277
+#define SOL_CAIF        278
+#define SOL_ALG         279
+#define SOL_NFC         280
+#define SOL_KCM         281
+#define SOL_TLS         282
+#define SOL_XDP         283
+
+#define SOMAXCONN       128
+
+#define MSG_OOB       0x0001
+#define MSG_PEEK      0x0002
+#define MSG_DONTROUTE 0x0004
+#define MSG_CTRUNC    0x0008
+#define MSG_PROXY     0x0010
+#define MSG_TRUNC     0x0020
+#define MSG_DONTWAIT  0x0040
+#define MSG_EOR       0x0080
+#define MSG_WAITALL   0x0100
+#define MSG_FIN       0x0200
+#define MSG_SYN       0x0400
+#define MSG_CONFIRM   0x0800
+#define MSG_RST       0x1000
+#define MSG_ERRQUEUE  0x2000
+#define MSG_NOSIGNAL  0x4000
+#define MSG_MORE      0x8000
+#define MSG_WAITFORONE 0x10000
+#define MSG_BATCH     0x40000
+#define MSG_ZEROCOPY  0x4000000
+#define MSG_FASTOPEN  0x20000000
+#define MSG_CMSG_CLOEXEC 0x40000000
+
+#define __CMSG_LEN(cmsg) (((cmsg)->cmsg_len + sizeof(long) - 1) & ~(long)(sizeof(long) - 1))
+#define __CMSG_NEXT(cmsg) ((unsigned char *)(cmsg) + __CMSG_LEN(cmsg))
+#define __MHDR_END(mhdr) ((unsigned char *)(mhdr)->msg_control + (mhdr)->msg_controllen)
+
+#define CMSG_DATA(cmsg) ((unsigned char *) (((struct cmsghdr *)(cmsg)) + 1))
+#define CMSG_NXTHDR(mhdr, cmsg) ((cmsg)->cmsg_len < sizeof (struct cmsghdr) || \
+	__CMSG_LEN(cmsg) + sizeof(struct cmsghdr) >= __MHDR_END(mhdr) - (unsigned char *)(cmsg) \
+	? 0 : (struct cmsghdr *)__CMSG_NEXT(cmsg))
+#define CMSG_FIRSTHDR(mhdr) ((size_t) (mhdr)->msg_controllen >= sizeof (struct cmsghdr) ? (struct cmsghdr *) (mhdr)->msg_control : (struct cmsghdr *) 0)
+
+#define CMSG_ALIGN(len) (((len) + sizeof (size_t) - 1) & (size_t) ~(sizeof (size_t) - 1))
+#define CMSG_SPACE(len) (CMSG_ALIGN (len) + CMSG_ALIGN (sizeof (struct cmsghdr)))
+#define CMSG_LEN(len)   (CMSG_ALIGN (sizeof (struct cmsghdr)) + (len))
+
+#define SCM_RIGHTS      0x01
+#define SCM_CREDENTIALS 0x02
+
+/*
+ * Darwin puts the length first: `struct sockaddr` starts with `sa_len`, an
+ * `unsigned char` giving the total size including that byte itself.
+ *
+ * musl omits it, which shifts every following field one byte to the left and
+ * makes 16 into 17 bytes.  On the device this is silent but fatal: the kernel
+ * returns an `EINVAL`-family error or, if the family is read from the wrong
+ * offset, `connect()` fails with `EAFNOSUPPORT` ("Address family not
+ * supported by protocol family") for every resolved address -- exactly what
+ * wget printed (DEBUG showed DNS working, then connect() failing).
+ *
+ * Sizes that must come out right: sockaddr 16, sockaddr_in 16, sockaddr_in6
+ * 28, sockaddr_storage 128.  The companion fix lives in
+ * netinet/in.h (sin_len) and netinet/in6.h (sin6_len), which already had it;
+ * this file was the one that had drifted.
+ */
+struct sockaddr {
+	unsigned char	sa_len;		/* Darwin: total length */
+	sa_family_t	sa_family;
+	char		sa_data[14];
+};
+
+#define _SS_SIZE		128
+#define _SS_PAD1SIZE	(_SS_SIZE - sizeof(unsigned char) - sizeof(sa_family_t) - sizeof(int))
+#define _SS_PAD2SIZE	(_SS_SIZE - sizeof(unsigned char) - sizeof(sa_family_t) - _SS_PAD1SIZE - sizeof(int))
+
+struct sockaddr_storage {
+	unsigned char	ss_len;		/* Darwin: length byte, as in sockaddr */
+	sa_family_t	ss_family;
+	char		__ss_pad1[_SS_PAD1SIZE];	/* 6 bytes  */
+	int		__ss_align;
+	char		__ss_pad2[_SS_PAD2SIZE];	/* 112 bytes */
+};
+
+int socket (int, int, int);
+int socketpair (int, int, int, int [2]);
+
+int shutdown (int, int);
+
+int bind (int, const struct sockaddr *, socklen_t);
+int connect (int, const struct sockaddr *, socklen_t);
+int listen (int, int);
+int accept (int, struct sockaddr *__restrict, socklen_t *__restrict);
+int accept4(int, struct sockaddr *__restrict, socklen_t *__restrict, int);
+
+int getsockname (int, struct sockaddr *__restrict, socklen_t *__restrict);
+int getpeername (int, struct sockaddr *__restrict, socklen_t *__restrict);
+
+ssize_t send (int, const void *, size_t, int);
+ssize_t recv (int, void *, size_t, int);
+ssize_t sendto (int, const void *, size_t, int, const struct sockaddr *, socklen_t);
+ssize_t recvfrom (int, void *__restrict, size_t, int, struct sockaddr *__restrict, socklen_t *__restrict);
+ssize_t sendmsg (int, const struct msghdr *, int);
+ssize_t recvmsg (int, struct msghdr *, int);
+
+int getsockopt (int, int, int, void *__restrict, socklen_t *__restrict);
+int setsockopt (int, int, int, const void *, socklen_t);
+
+int sockatmark (int);
+
+#if _REDIR_TIME64
+#ifdef _GNU_SOURCE
+__REDIR(recvmmsg, __recvmmsg_time64);
+#endif
+#endif
+
+#ifdef __cplusplus
+}
+#endif
+
+/* ===== DARWIN_OVERRIDES: Darwin socket constants =====
+ * iOS 10 has NO SOCK_NONBLOCK/SOCK_CLOEXEC type flags (probed: every
+ * candidate bit except 0x1 is rejected with EINVAL).  Undefine musl's so
+ * callers fall back to fcntl(F_SETFL, O_NONBLOCK) which works. */
+#undef SOCK_NONBLOCK
+#undef SOCK_CLOEXEC
+#undef SOL_SOCKET
+#define SOL_SOCKET	0xffff
+#undef SOL_LOCAL
+#define SOL_LOCAL	0
+
+#undef AF_UNSPEC
+#define AF_UNSPEC	0
+#undef AF_UNIX
+#define AF_UNIX		1
+#undef AF_LOCAL
+#define AF_LOCAL	AF_UNIX
+#undef AF_INET
+#define AF_INET		2
+#undef AF_ROUTE
+#define AF_ROUTE	17
+#undef AF_LINK
+#define AF_LINK		18
+#undef AF_INET6
+#define AF_INET6	30
+#undef AF_SYSTEM
+#define AF_SYSTEM	32
+#undef AF_MAX
+#define AF_MAX		40
+#undef PF_UNSPEC
+#define PF_UNSPEC	AF_UNSPEC
+#undef PF_UNIX
+#define PF_UNIX		AF_UNIX
+#undef PF_LOCAL
+#define PF_LOCAL	AF_UNIX
+#undef PF_INET
+#define PF_INET		AF_INET
+#undef PF_INET6
+#define PF_INET6	AF_INET6
+
+#undef SOCK_STREAM
+#define SOCK_STREAM	1
+#undef SOCK_DGRAM
+#define SOCK_DGRAM	2
+#undef SOCK_RAW
+#define SOCK_RAW	3
+#undef SOCK_RDM
+#define SOCK_RDM	4
+#undef SOCK_SEQPACKET
+#define SOCK_SEQPACKET	5
+
+#undef SO_DEBUG
+#define SO_DEBUG	0x0001
+#undef SO_ACCEPTCONN
+#define SO_ACCEPTCONN	0x0002
+#undef SO_REUSEADDR
+#define SO_REUSEADDR	0x0004
+#undef SO_KEEPALIVE
+#define SO_KEEPALIVE	0x0008
+#undef SO_DONTROUTE
+#define SO_DONTROUTE	0x0010
+#undef SO_BROADCAST
+#define SO_BROADCAST	0x0020
+#undef SO_USELOOPBACK
+#define SO_USELOOPBACK	0x0040
+#undef SO_LINGER
+#define SO_LINGER	0x0080
+#undef SO_OOBINLINE
+#define SO_OOBINLINE	0x0100
+#undef SO_REUSEPORT
+#define SO_REUSEPORT	0x0200
+#undef SO_TIMESTAMP
+#define SO_TIMESTAMP	0x0400
+#undef SO_SNDBUF
+#define SO_SNDBUF	0x1001
+#undef SO_RCVBUF
+#define SO_RCVBUF	0x1002
+#undef SO_SNDLOWAT
+#define SO_SNDLOWAT	0x1003
+#undef SO_RCVLOWAT
+#define SO_RCVLOWAT	0x1004
+#undef SO_SNDTIMEO
+#define SO_SNDTIMEO	0x1005
+#undef SO_RCVTIMEO
+#define SO_RCVTIMEO	0x1006
+#undef SO_ERROR
+#define SO_ERROR	0x1007
+#undef SO_TYPE
+#define SO_TYPE		0x1008
+#undef SO_NOSIGPIPE
+#define SO_NOSIGPIPE	0x1022
+
+#undef MSG_OOB
+#define MSG_OOB		0x1
+#undef MSG_PEEK
+#define MSG_PEEK	0x2
+#undef MSG_DONTROUTE
+#define MSG_DONTROUTE	0x4
+#undef MSG_EOR
+#define MSG_EOR		0x8
+#undef MSG_TRUNC
+#define MSG_TRUNC	0x10
+#undef MSG_CTRUNC
+#define MSG_CTRUNC	0x20
+#undef MSG_WAITALL
+#define MSG_WAITALL	0x40
+#undef MSG_DONTWAIT
+#define MSG_DONTWAIT	0x80
+#undef MSG_EOF
+#define MSG_EOF		0x100
+#undef MSG_NOSIGNAL
+#define MSG_NOSIGNAL	0x80000
+
+#undef SCM_RIGHTS
+#define SCM_RIGHTS	0x01
+#undef SCM_TIMESTAMP
+#define SCM_TIMESTAMP	0x02
+#define IP_TOS          3       /* Darwin (BSD): IP options byte */
+/* ===== end DARWIN_OVERRIDES ===== */
+#endif
+
+/* BSD routing socket MIB levels for sysctl(CTL_NET, PF_ROUTE, ...).
+ * Values are the universal 4.4BSD/XNU ones (xnu bsd/sys/socket.h); musl's
+ * socket.h has PF_ROUTE but not these, and libdnet's route-bsd.c needs
+ * NET_RT_DUMP to walk the kernel routing table. */
+#ifndef NET_RT_DUMP
+#define NET_RT_DUMP		1
+#define NET_RT_FLAGS		2
+#define NET_RT_IFLIST		3
+#define NET_RT_STAT		4
+#define NET_RT_TRASH		5
+#define NET_RT_IFLIST2		6
+#define NET_RT_DUMP2		7
+#define NET_RT_MAXID		10
+#endif
