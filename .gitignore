@@ -49,7 +49,12 @@ __pycache__/
 
 # docs/: private working notes (intranet IPs, device details) -- never
 # published.  Files stay on disk; only git tracking is dropped (2026-11-26).
-docs/
+# Exception: docs/PACKAGES.md is the PUBLIC package table (generated from the
+# APT index, linked from the gh-pages landing page, committed by CI) --
+# re-included below.  The glob must be docs/* (not docs/) or git skips
+# re-inclusion inside an excluded directory.
+docs/*
+!docs/PACKAGES.md
 
 # iperf3 upstream source + configure build tree: never tracked (package
 # convention is patches + scripts only; src/ is a regenerable tarball drop).

@@ -138,7 +138,7 @@ if [ "$NO_SIGN" = 0 ]; then
     gpg --batch --yes --pinentry-mode loopback --local-user "$KEY" \
         --passphrase '' --armor --detach-sign \
         -o repo/dists/stable/Release.gpg repo/dists/stable/Release
-    gpg --armor --export "$KEY" > repo/venus-homelab.asc
+    gpg --armor --export-filter 'keep-uid=uid =~ venus-homelab' --export "$KEY" > repo/venus-homelab.asc
     echo "==> signed with $KEY; public key at repo/venus-homelab.asc"
 else
     echo "==> --no-sign: Release left unsigned (CI gate mode)"

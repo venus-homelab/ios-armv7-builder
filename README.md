@@ -3,15 +3,14 @@
 A cross-build kit for **jailbroken 32-bit iOS** (`armv7`, iOS 10.x) that works
 entirely **on a Linux host** — no Xcode, no macOS, no Apple signing.  Since the
 2026-11-15 SDK-mode ruling, builds use the real Apple headers from the public
-`xybp888/iOS-SDKs` mirror (`docs/toolchain.md` §16); the shipped package set is
-generated from the repo index in [docs/PACKAGES.md](docs/PACKAGES.md).
+`xybp888/iOS-SDKs` mirror
+([toolchain notes §16](https://venus-homelab.github.io/ios-armv7-builder/docs/toolchain.md));
+the shipped package set is generated from the repo index in
+[docs/PACKAGES.md](docs/PACKAGES.md).
 
 ```
 Linux host ──(clang+ld64)──▶ Mach-O armv7 ──(ldid)──▶ .deb ──▶ APT repo ──▶ OTA to the device
 ```
-
-The shipped package set is generated from the APT index in
-[docs/PACKAGES.md](docs/PACKAGES.md).
 
 ## Quick start
 
@@ -34,11 +33,11 @@ Pristine source always comes from `sources.lock` through
 build.sh calls it, you never unpack by hand).  Go packages additionally
 share `tools/go-env.sh` (revived-toolchain bootstrap + environment iron
 rules); the standard shape for a Go port is
-[docs/go-app-template.md](docs/go-app-template.md).  Publishing is part of
+[the Go app template](https://venus-homelab.github.io/ios-armv7-builder/docs/go-app-template.md).  Publishing is part of
 the job, not an afterthought: `tools/pool-freshness.sh` flags a deb that
 was built into `out/` but never reached the pool (the 2026-11-25 ffmpeg
 -2 case), and byte-A/B is what turns "rebuild differs sometimes" into a
-named wall ([docs/byte-ab-report.md](docs/byte-ab-report.md)).  The whole
+named wall ([the byte-A/B report](https://venus-homelab.github.io/ios-armv7-builder/docs/byte-ab-report.md)).  The whole
 fleet's device acceptance is `bash tests/run-all.sh` (regenerates
 `tests/REPORT.md`).
 
@@ -53,26 +52,22 @@ a hosted runner cannot reach the LAN device).
 
 The canonical repo URL lives in ONE place: `REPO_URL` in
 `scripts/make-repo.sh` (Depiction normalization + install docs quote it —
-do not hardcode copies).  **The GitHub account is suspended
-(2026-11-25)**: the GitHub Pages APT source below is frozen until the
-account is back, and until then the only install path is from the local
-pool:
+do not hardcode copies).  The GitHub Pages APT source is live:
+
+```
+https://venus-homelab.github.io/ios-armv7-builder/repo
+```
+
+Offline install from the local pool also works:
 
 ```sh
 scp repo/pool/main/*/<pkg>/<pkg>_*_iphoneos-arm.deb <device>:/var/mobile/
 ssh root@<device> dpkg -i /var/mobile/<pkg>_<ver>_iphoneos-arm.deb
 ```
 
-Once the account is back, publishing resumes via
-`scripts/publish-gh-pages.sh` and the source becomes usable again:
-
-```
-https://venus-homelab.github.io/ios-armv7-builder/repo   # FROZEN
-```
-
 The repository is **signed** (`InRelease` / `Release.gpg`, key
-`2A324C4577AB01949BEA46BC8A6DFC60F7F9E596`).  When the source is live
-(post-unblock), add it in Cydia/Sileo (you get the trust prompt), or on
+`2A324C4577AB01949BEA46BC8A6DFC60F7F9E596`).  Add it in Cydia/Sileo (you
+get the trust prompt), or on
 the command line as root — the URL is `REPO_URL` from
 `scripts/make-repo.sh`, quoted here as `<REPO_URL>`:
 
@@ -92,17 +87,12 @@ apt-get install ifconfig4           # /var/mobile/tools/ifconfig/{ifconfig,route
 
 Every package name in an `apt-get install` line is pool-checked by
 `tools/doc-rot-check.sh` (the 2026-11-25 node4 drift: node moved out of
-this kit on 2026-11-24 — see `~/node-armv7-builder`).
+this kit on 2026-11-24).
 
 The live package list is generated from the APT index — see docs/PACKAGES.md (do not hand-edit counts here) — including `dropbear4`
-and `openssh4`, which at first shipped only as
-[release assets](https://github.com/venus-homelab/ios-armv7-builder/releases)
-(`make-repo.sh` publishes every `out/*.deb`, and the repo now carries the two
-SSH packages as well). That removes the old release-only guard, so keep the
-reason it existed in mind: these are the packages that replace or shadow
-system SSH components, and an `apt-get upgrade` can now update them — re-check
-ports and re-load the daemon after such an upgrade. The release assets stay
-up for manual installs:
+and `openssh4`, which shadow system SSH components: an `apt-get upgrade`
+can now update them — re-check ports and re-load the daemon after such an
+upgrade. The manual equivalent, for reference:
 
 ```sh
 dpkg -i openssh4_10.6p2-1_iphoneos-arm.deb
