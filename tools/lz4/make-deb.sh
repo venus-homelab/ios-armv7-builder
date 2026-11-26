@@ -47,7 +47,7 @@ MAN="$SRC/programs/lz4.1"
 
 # Same contract as fzf/make-deb.sh sign(): failures loud, signature asserted
 # with ldid -e, using the host ldid that the repo's toolchain ships.
-LDID="$HOME/ios-tool/bin/ldid"
+LDID="${LDID:-${IOS_STUBDIR:-$HOME/ios-tool}/bin/ldid}"
 export LD_LIBRARY_PATH="$HOME/ios-tool/x-libdispatch/lib:$HOME/ios-tool/x-tapi/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 sign() {
     local src="$1" dst="$2"
