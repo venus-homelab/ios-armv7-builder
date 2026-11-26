@@ -75,7 +75,7 @@ jobs:
           # (dpkg-deb's tar/gzip clamping, __DATE__/__TIME__ users) become
           # a function of the source tree, not the wall clock
           export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
-          mkdir -p tmp/src   # git checkout carries no tmp/ (gitignored)
+          mkdir -p tmp/src out   # git checkout carries no gitignored dirs (out/ died on entr's ld probe, run 45907093409)
           if [ ! -f "${{ inputs.package }}/build.sh" ]; then
             echo "unknown package: ${{ inputs.package }} (no build.sh)" >&2
             exit 2

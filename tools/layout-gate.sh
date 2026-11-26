@@ -109,7 +109,12 @@ def cell_target(cell, kind):
             return mm.group(1) if mm else None
         return href.lstrip('./')
     if kind == 'docs':
-        m = re.match(r'\[([^]]+)\]', cell)
+        m = re.match(r'\[([^]]+)\]\(([^)]+)\)', cell)
+        if m and m.group(2).startswith('http'):
+            # site-absolute mirror link (docs/ is private): existence was
+            # enforced by the generator against the local docs tree -- a
+            # CI checkout has no private files and must not fail here
+            return None
         return f'docs/{m.group(1)}' if m else None
 bad = []
 # forward: a non-'--' cell must resolve
