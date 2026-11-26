@@ -57,5 +57,6 @@ jobs:
         run: tools/doc-rot-check.sh
       - name: layout gate (categorization, cross-package refs, artifact names, scratch)
         run: tools/layout-gate.sh
-      - name: CI matrix coverage (every build.sh dir is in the matrix or explicitly skipped)
-        run: tools/ci-matrix-coverage.sh
+      # (the old ci-matrix-coverage step is gone: its script never existed
+      # in git and the full-build matrix it audited was removed 2026-11-25;
+      # tools/gate-local.sh's inventory gate covers build.sh dir accounting)

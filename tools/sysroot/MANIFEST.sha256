@@ -936,6 +936,7 @@ dcd818a544d17d5131139893087d0585a6ff7eda960ddaeee2ad3e4e66819412  tools/sysroot/
 cd30e31d6eb4263abf962877b3c67d745d34a77826c5777224cfb5256e9aa4d9  tools/sysroot/tbd/libncursesw.5.tbd
 acd55d93021aa70f0bd9aaad3205884ee759ff7482348d2fc21654b633400ec4  tools/sysroot/tbd/libobjc.tbd
 92b848d75029e243765bb53f61a4356b975c2a94c9f0bb895375ea8d1561a312  tools/sysroot/tbd/libsystem_blocks.tbd
+f3b3ea0f71761a19e308a5e4a8cfcb1404b097635cfdfb60cc0bd74917a67322  tools/sysroot/tbd/libSystem.tbd
 # SDK sentinels: the CI toolchain cache must carry
 # byte-identical copies of these (paths under usr/include):
 69540a58cd89b7e3d048670ff2530b3611fb8c967d3a3ef91c87ccbcffa65410  SDK:uuid/uuid.h
