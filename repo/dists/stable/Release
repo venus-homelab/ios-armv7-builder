@@ -1,0 +1,29 @@
+Architectures: iphoneos-arm
+Codename: stable
+Components: main
+Date: Sat, 28 Nov 2026 10:35:49 +0000
+Description: Cross-compiled tools for armv7 iOS 10.x - built on Linux, no Xcode
+Label: venus-homelab iOS Tools
+Origin: venus-homelab
+Suite: stable
+Version: 1.0
+MD5Sum:
+ f44bafce096d3e8040f5067adc6108b8              260 Release
+ e9699cb07d57ea82e215c45f16b5b7b1            65005 main/binary-iphoneos-arm/Packages
+ 6340fda8dc0b2f2d0e0f544900bbd8bb            21026 main/binary-iphoneos-arm/Packages.bz2
+ db2cb06f50eacb970a77d9b11c943c02            24266 main/binary-iphoneos-arm/Packages.gz
+SHA1:
+ 5f5c1761f065c31605714d62a7b52703d013624f              260 Release
+ 6c10e5f33effdf2d616f575a46cda0263d74d9b7            65005 main/binary-iphoneos-arm/Packages
+ 330183345c28ced73befe44a3443d38acd691d66            21026 main/binary-iphoneos-arm/Packages.bz2
+ fd1d665234956194cc5698c313745ce7b04f49ab            24266 main/binary-iphoneos-arm/Packages.gz
+SHA256:
+ c568f37c489f7c910b20dcf0592c21c01901f04ea085ed45fa6f373c2db7a50b              260 Release
+ b64bdf112c51d09fdba4a5964e4eb854114dc50c66d1380ea50b75a640f47885            65005 main/binary-iphoneos-arm/Packages
+ 70c7538ae71bae7246431adf50dafd99e6315aabfc6dad9d6bb5e8ad75dd38e1            21026 main/binary-iphoneos-arm/Packages.bz2
+ d74a026ceb31a72dcd1443f6dfbd139436f614741cc6e427b44d1cdf7ffa4fc9            24266 main/binary-iphoneos-arm/Packages.gz
+SHA512:
+ c21e33ba9021714a383cb4d88168896ec58ea10abfb2e1cecc7c353287541cc32f72891b317c1765897488e0816f3bd40bc564820b6c60e0c606f4997edbdd0a              260 Release
+ c35135f34f6ac81b2e0f583449b6afa3ae820aa88d4a95f56d35bfc389bc16a2a5d6f729d57ff757c630e00f08d84ccf5aa48fc26c48f572de1502fee0765a3f            65005 main/binary-iphoneos-arm/Packages
+ 7dcf151f6893c99911ca3915db1e7c1348910e52ffa57ed17494d36e58c6a02ee12269d615448971524bc49e10f38c3c0c7372b22386ba73d888f502a536caf1            21026 main/binary-iphoneos-arm/Packages.bz2
+ 2cf17cb3c22975142b5129d866f941ba8b50d857849c6037a4a13f4ea324fd5ae42c8adb9afa91bd26e1e7418b18588273537a7dde6f4538c7da8d02af2a4fa8            24266 main/binary-iphoneos-arm/Packages.gz
